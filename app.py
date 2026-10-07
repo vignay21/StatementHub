@@ -344,24 +344,32 @@ def app() -> None:
     if st is None:
         raise RuntimeError("The browser interface needs Streamlit. Run: pip install -r requirements.txt")
     st.set_page_config(page_title="Unified Bank Search", page_icon="🔎", layout="wide")
-    st.title("Unified Bank Search")
-
     sb_client = db.get_supabase_client()
-    with st.sidebar:
-        st.subheader("Database Status")
+
+    col_title, col_status = st.columns([4, 1], vertical_alignment="center")
+    with col_title:
+        st.title("Unified Bank Search")
+    with col_status:
         if sb_client:
-            st.success("🟢 Supabase Cloud DB: Connected")
-            st.caption("Transactions & party names persist across sessions and deployments.")
+            if hasattr(st, "badge"):
+                st.badge("🟢 Supabase Connected", color="green")
+            else:
+                st.caption("🟢 **Supabase Connected**")
         else:
-            st.info("💾 Mode: Local Storage")
-            with st.expander("☁️ Connect Supabase (Cloud DB)", expanded=False):
-                st.markdown(
-                    "**Enable Cloud Persistence & Daily Deduplication:**\n\n"
-                    "1. Create a free project at [supabase.com](https://supabase.com)\n"
-                    "2. Run the SQL below in Supabase's **SQL Editor**\n"
-                    "3. Add your project URL & Key into `.streamlit/secrets.toml`"
-                )
-                st.code(db.SUPABASE_SCHEMA_SQL, language="sql")
+            if hasattr(st, "badge"):
+                st.badge("💾 Local Mode", color="gray")
+            else:
+                st.caption("💾 **Local Mode**")
+
+    if not sb_client:
+        with st.expander("☁️ Connect Supabase (Cloud Database)", expanded=False):
+            st.markdown(
+                "**Enable Cloud Persistence & Daily Deduplication:**\n\n"
+                "1. Create a free project at [supabase.com](https://supabase.com)\n"
+                "2. Run the SQL below in Supabase's **SQL Editor**\n"
+                "3. Add your project URL & Key into `.streamlit/secrets.toml`"
+            )
+            st.code(db.SUPABASE_SCHEMA_SQL, language="sql")
 
     assignments = load_assignments()
     if sb_client:
