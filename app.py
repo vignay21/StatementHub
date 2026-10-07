@@ -12,6 +12,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 
 import pandas as pd
@@ -337,6 +338,75 @@ def search_transactions(transactions: pd.DataFrame, query: str, mode: str) -> pd
     return transactions[utr_mask].copy()
 
 
+def render_backup_restore_section(combined: pd.DataFrame, assignments: dict[str, Any], sb_client: Any) -> None:
+    with st.expander("💾 Backup & Restore Center"):
+        st.markdown("**Create an offline backup or restore your database & party mappings.**")
+        b_col1, b_col2 = st.columns(2)
+        with b_col1:
+            st.write("**Download Complete Backup**")
+            st.caption(f"• **Transactions:** {len(combined):,} records\n• **Party Mappings:** {len(assignments.get('party_mappings', {}))} rules")
+            if not combined.empty:
+                txns_list = json.loads(combined.to_json(orient="records", date_format="iso"))
+                backup_data = {
+                    "version": "1.0",
+                    "exported_at": datetime.now().isoformat(),
+                    "total_transactions": len(combined),
+                    "total_party_mappings": len(assignments.get("party_mappings", {})),
+                    "party_mappings": assignments.get("party_mappings", {}),
+                    "transaction_overrides": assignments.get("transaction_overrides", {}),
+                    "transactions": txns_list,
+                }
+                backup_bytes = json.dumps(backup_data, indent=2, ensure_ascii=False).encode("utf-8")
+                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                st.download_button(
+                    "⬇️ Download System Backup (.json)",
+                    data=backup_bytes,
+                    file_name=f"statementhub_backup_{timestamp_str}.json",
+                    mime="application/json",
+                    help="Downloads all transactions and party mappings to a secure JSON file",
+                )
+            else:
+                st.caption("No transactions available to backup yet.")
+
+        with b_col2:
+            st.write("**Restore Database from Backup**")
+            restore_file = st.file_uploader(
+                "Upload Backup File (.json)",
+                type=["json"],
+                key="restore_backup_file",
+                help="Select a previously exported StatementHub backup JSON file to restore.",
+            )
+            if restore_file is not None:
+                try:
+                    loaded_backup = json.loads(restore_file.getvalue().decode("utf-8"))
+                    restored_txns = loaded_backup.get("transactions", [])
+                    restored_mappings = loaded_backup.get("party_mappings", {})
+                    restored_overrides = loaded_backup.get("transaction_overrides", {})
+
+                    st.info(f"Found **{len(restored_txns):,} transactions** and **{len(restored_mappings)} party mappings** in backup.")
+
+                    if st.button("🚀 Restore Now", type="primary"):
+                        assignments["party_mappings"].update(restored_mappings)
+                        assignments["transaction_overrides"].update(restored_overrides)
+                        save_assignments(assignments)
+
+                        if sb_client:
+                            for k, v in restored_mappings.items():
+                                db.save_party_mapping(sb_client, k, v)
+                            if restored_txns:
+                                r_df = pd.DataFrame(restored_txns)
+                                db.sync_transactions_with_dedup(sb_client, r_df)
+                            st.session_state["cached_transactions"] = db.fetch_all_transactions(sb_client)
+                        else:
+                            if restored_txns:
+                                st.session_state["cached_transactions"] = pd.DataFrame(restored_txns)
+
+                        st.toast("Database and party mappings restored successfully!", icon="✅")
+                        st.rerun()
+                except Exception as exc:
+                    st.error(f"Invalid backup file format: {exc}")
+
+
 def app() -> None:
     if st is None:
         raise RuntimeError("The browser interface needs Streamlit. Run: pip install -r requirements.txt")
@@ -417,16 +487,71 @@ def app() -> None:
             st.info("No statements in database yet. Upload statements above to get started.")
         else:
             st.info("Select your bank statements to begin. The app recognizes HDFC-style, ICICI-style, and CSV statement layouts, plus similar variants.")
+        render_backup_restore_section(combined, assignments, sb_client)
         return
 
     combined = apply_assignments(combined, assignments)
+
+    # Filters: Bank Account & Time Period
+    filter_col1, filter_col2 = st.columns(2)
+    with filter_col1:
+        all_banks = ["All Banks"] + sorted([b for b in combined["Bank"].dropna().unique().tolist() if b])
+        selected_bank = st.selectbox("Bank Account", options=all_banks, index=0)
+    with filter_col2:
+        period_options = [
+            "All Time",
+            "This Month",
+            "Last 30 Days",
+            "Current Financial Year (Apr-Mar)",
+            "Custom Date Range",
+        ]
+        selected_period = st.selectbox("Period", options=period_options, index=0)
+
+    custom_start_date = None
+    custom_end_date = None
+    if selected_period == "Custom Date Range":
+        d_col1, d_col2 = st.columns(2)
+        with d_col1:
+            custom_start_date = st.date_input("From Date", value=None)
+        with d_col2:
+            custom_end_date = st.date_input("To Date", value=None)
+
+    filtered_df = combined.copy()
+    if selected_bank != "All Banks":
+        filtered_df = filtered_df[filtered_df["Bank"] == selected_bank].copy()
+
+    if selected_period != "All Time" and not filtered_df.empty:
+        parsed_dates = pd.to_datetime(filtered_df["Date"], format="%d-%m-%Y", errors="coerce")
+        valid_dates = parsed_dates.dropna()
+        ref_date = valid_dates.max() if not valid_dates.empty else pd.Timestamp(datetime.now())
+
+        if selected_period == "This Month":
+            mask = (parsed_dates.dt.year == ref_date.year) & (parsed_dates.dt.month == ref_date.month)
+            filtered_df = filtered_df[mask].copy()
+        elif selected_period == "Last 30 Days":
+            cutoff = ref_date - pd.Timedelta(days=30)
+            mask = (parsed_dates >= cutoff) & (parsed_dates <= ref_date)
+            filtered_df = filtered_df[mask].copy()
+        elif selected_period == "Current Financial Year (Apr-Mar)":
+            fy_start_year = ref_date.year if ref_date.month >= 4 else ref_date.year - 1
+            fy_start = pd.Timestamp(year=fy_start_year, month=4, day=1)
+            fy_end = pd.Timestamp(year=fy_start_year + 1, month=3, day=31, hour=23, minute=59, second=59)
+            mask = (parsed_dates >= fy_start) & (parsed_dates <= fy_end)
+            filtered_df = filtered_df[mask].copy()
+        elif selected_period == "Custom Date Range":
+            mask = pd.Series(True, index=filtered_df.index)
+            if custom_start_date:
+                mask &= (parsed_dates >= pd.Timestamp(custom_start_date))
+            if custom_end_date:
+                mask &= (parsed_dates <= pd.Timestamp(custom_end_date))
+            filtered_df = filtered_df[mask].copy()
 
     search_modes = {"UTR / Reference": "utr", "Date": "date", "Amount": "amount"}
     selected_mode = st.radio("Search by", list(search_modes.keys()), horizontal=True)
     mode = search_modes[selected_mode]
 
     if mode == "utr":
-        all_ids = sorted(combined.loc[combined["UTR / Reference"] != "", "UTR / Reference"].drop_duplicates().tolist())
+        all_ids = sorted(filtered_df.loc[filtered_df["UTR / Reference"] != "", "UTR / Reference"].drop_duplicates().tolist())
         effective_query = st.selectbox(
             "Search UTR / Reference",
             options=all_ids,
@@ -445,7 +570,7 @@ def app() -> None:
             placeholder="Enter amount (e.g. 25000, 25,000, or ₹25,000)",
         ).strip()
 
-    results = search_transactions(combined, effective_query, mode)
+    results = search_transactions(filtered_df, effective_query, mode)
 
     result_ids = results[results["UTR / Reference"] != ""]["UTR / Reference"]
     duplicated = result_ids[result_ids.duplicated(keep=False)].unique().tolist()
@@ -566,6 +691,8 @@ def app() -> None:
         "unified-search-results.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+    render_backup_restore_section(combined, assignments, sb_client)
 
 
 if __name__ == "__main__":
