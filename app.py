@@ -61,12 +61,82 @@ def header_key(value: Any) -> str:
 
 
 def party_match_key(description: str) -> str:
-    text = header_key(description)
-    text = re.sub(r"\b(?:upi|imps|neft|rtgs|inb|mmt|funds?|transfer|payment|paytm|phonepe|gpay)\b", " ", text)
+    raw = clean_text(description).strip()
+    if not raw:
+        return ""
+
+    # 1. Slash format: UPI/..., CLG/..., INET-IMPS-..., MOB-IMPS-...
+    if "/" in raw:
+        parts = [p.strip() for p in raw.split("/") if p.strip()]
+        if parts:
+            p0_upper = parts[0].upper()
+            if "UPI" in p0_upper:
+                # Format A: UPI/CR(or DR)/12-digit RRN/PARTY/BANK/VPA/Remark//hash/date
+                if len(parts) >= 4 and parts[1].upper() in ("CR", "DR"):
+                    name = parts[3]
+                    if name.lower() == "bank acco":
+                        acc = re.sub(r"[^a-z0-9]+", " ", parts[5].lower()).strip() if len(parts) > 5 else ""
+                        rem = re.sub(r"[^a-z0-9]+", " ", parts[6].lower()).strip() if len(parts) > 6 else ""
+                        rem = re.sub(r"\b(?:payment|advance|dr|cr)\b", "", rem).strip()
+                        key = f"bank acco {acc} {rem}".strip()
+                        return re.sub(r"\s+", " ", key)
+                    return header_key(name)
+                # Format B: UPI/PARTY/VPA/Payment fr/Bank/RRN/hash
+                elif len(parts) >= 2:
+                    first = parts[1]
+                    if first.isdigit():
+                        vpa_parts = [p for p in parts if "@" in p]
+                        if vpa_parts:
+                            vpa_prefix = vpa_parts[0].split("@")[0]
+                            return header_key(vpa_prefix)
+                    else:
+                        return header_key(first)
+
+            # Cheque clearing: CLG/PARTY/CHEQUE_NO/BANK/...
+            elif p0_upper == "CLG" and len(parts) >= 2:
+                if parts[1].upper() != "CHEQUE":
+                    return header_key(parts[1])
+
+            # IMPS: INET-IMPS-CR/PARTY/...
+            elif "IMPS" in p0_upper and len(parts) >= 2:
+                for part in parts[1:]:
+                    if not part.isdigit() and not re.match(r"^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", part):
+                        return header_key(part)
+
+    # 2. Hyphen format: UPI-..., IMPS-..., RTGS-...
+    if "-" in raw:
+        parts = [p.strip() for p in raw.split("-") if p.strip()]
+        if len(parts) >= 2:
+            p0_upper = parts[0].upper()
+            if "UPI" in p0_upper or "IMPS" in p0_upper or "RTGS" in p0_upper:
+                for candidate in parts[1:]:
+                    if not candidate.isdigit() and "@" not in candidate and not re.match(r"^[A-Z]{4}0[A-Z0-9]{6}$", candidate, re.IGNORECASE):
+                        return header_key(candidate)
+
+    # 3. NEFT pattern: MB NEFT Dr <ref> <PARTY> <IFSC> <acc> <remark>
+    neft_match = re.search(r"\b(?:mb\s+neft|neft)\s+(?:dr|cr)?\s*(?:cnrbh\w+|\w+\d+)?\s+([a-z\s]+?)\s+[a-z]{4}\d{7}", raw, re.IGNORECASE)
+    if neft_match:
+        party = neft_match.group(1).strip()
+        if party:
+            return header_key(party)
+
+    # 4. Handle pre-cleaned or space-delimited UPI text:
+    text = header_key(raw)
+    masked_split = re.split(r"\b(?:xx\w*|\*\*\w*)\b", text)
+    if len(masked_split) > 1 and masked_split[0].strip():
+        prefix = masked_split[0].strip()
+        prefix = re.sub(r"\b(?:upi|imps|neft|rtgs|cr|dr)\b", " ", prefix).strip()
+        if len(prefix) >= 3:
+            return prefix
+
+    # 5. Generic sanitization: strip transaction hashes, dates, RRNs, keywords
+    text = re.sub(r"\b(?:upi|imps|neft|rtgs|inb|mmt|funds?|transfer|payment|paytm|phonepe|gpay|dr|cr)\b", " ", text)
     text = re.sub(r"\b(?:cnrbh\d{8,}|in\d{12,}|\d{12,})\b", " ", text)
     text = re.sub(r"\b\d{1,2}\s+\d{1,2}\s+\d{2,4}\b", " ", text)
+    text = re.sub(r"\b(?:axl|ybl|ptm|paz|ibl|ici|hdf|smy|axb|uti|citi|sbin|cnrb)[a-z0-9]{16,}\b", " ", text)
+    text = re.sub(r"\b[a-z0-9]{22,}\b", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return text or header_key(description)
+    return text or header_key(raw)
 
 
 def transaction_key(row: dict[str, Any]) -> str:
@@ -278,6 +348,8 @@ def save_assignments(assignments: dict[str, dict[str, str]]) -> None:
 
 def apply_assignments(transactions: pd.DataFrame, assignments: dict[str, dict[str, str]]) -> pd.DataFrame:
     transactions = transactions.copy()
+    if "Description" in transactions.columns:
+        transactions["Party match key"] = transactions["Description"].apply(party_match_key)
     mapped = transactions["Party match key"].map(assignments["party_mappings"]).fillna("")
     overrides = transactions["Transaction key"].map(assignments["transaction_overrides"]).fillna("")
     party_names = overrides.where(overrides.ne(""), mapped)
