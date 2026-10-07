@@ -465,6 +465,11 @@ def app() -> None:
 
     results = results.reset_index(drop=True)
 
+    if "editor_version" not in st.session_state:
+        st.session_state.editor_version = 0
+
+    editor_key = f"transactions_editor_{st.session_state.editor_version}"
+
     display_columns = [
         "Bank", "Date", "Description", "Party Name", "Amount", "Type",
         "UTR / Reference", "Balance", "Duplicate UTR",
@@ -474,7 +479,7 @@ def app() -> None:
         disabled=[col for col in display_columns if col != "Party Name"],
         use_container_width=True,
         hide_index=True,
-        key="transactions_editor",
+        key=editor_key,
         column_config={
             "Amount": st.column_config.NumberColumn(format="₹ %0.2f"),
             "Balance": st.column_config.NumberColumn(format="₹ %0.2f"),
@@ -485,38 +490,51 @@ def app() -> None:
         },
     )
 
-    party_changed = (
-        edited_results["Party Name"].fillna("").astype(str).str.strip()
-        != results["Party Name"].fillna("").astype(str).str.strip()
-    )
-    if party_changed.any():
-        changed_indices = results.index[party_changed]
+    editor_state = st.session_state.get(editor_key, {})
+    edited_rows = editor_state.get("edited_rows", {})
+
+    changes_to_apply: dict[int, str] = {}
+    if edited_rows:
+        for idx_raw, col_edits in edited_rows.items():
+            if "Party Name" in col_edits:
+                changes_to_apply[int(idx_raw)] = clean_text(col_edits["Party Name"])
+    else:
+        diff = (
+            edited_results["Party Name"].fillna("").astype(str).str.strip()
+            != results["Party Name"].fillna("").astype(str).str.strip()
+        )
+        if diff.any():
+            for idx in results.index[diff]:
+                changes_to_apply[int(idx)] = clean_text(edited_results.loc[idx, "Party Name"])
+
+    if changes_to_apply:
         updated_count = 0
-        for idx in changed_indices:
-            new_val = clean_text(edited_results.loc[idx, "Party Name"])
-            row = results.loc[idx]
-            match_key = row["Party match key"]
-            txn_key = row["Transaction key"]
-            if new_val:
-                if apply_reusable:
-                    assignments["party_mappings"][match_key] = new_val
+        for idx, new_val in changes_to_apply.items():
+            if idx in results.index:
+                row = results.loc[idx]
+                match_key = row["Party match key"]
+                txn_key = row["Transaction key"]
+                if new_val:
+                    if apply_reusable:
+                        assignments["party_mappings"][match_key] = new_val
+                        assignments["transaction_overrides"].pop(txn_key, None)
+                        if sb_client:
+                            db.save_party_mapping(sb_client, match_key, new_val)
+                    else:
+                        assignments["transaction_overrides"][txn_key] = new_val
+                        if sb_client:
+                            db.save_transaction_override(sb_client, txn_key, new_val)
+                else:
+                    assignments["party_mappings"].pop(match_key, None)
                     assignments["transaction_overrides"].pop(txn_key, None)
                     if sb_client:
-                        db.save_party_mapping(sb_client, match_key, new_val)
-                else:
-                    assignments["transaction_overrides"][txn_key] = new_val
-                    if sb_client:
-                        db.save_transaction_override(sb_client, txn_key, new_val)
-            else:
-                assignments["party_mappings"].pop(match_key, None)
-                assignments["transaction_overrides"].pop(txn_key, None)
-                if sb_client:
-                    db.delete_party_mapping(sb_client, match_key)
-            updated_count += 1
+                        db.delete_party_mapping(sb_client, match_key)
+                updated_count += 1
 
         save_assignments(assignments)
         if "cached_transactions" in st.session_state:
             st.session_state["cached_transactions"] = apply_assignments(st.session_state["cached_transactions"], assignments)
+        st.session_state.editor_version += 1
         st.toast(f"Saved party name for {updated_count} transaction{'s' if updated_count > 1 else ''}.", icon="✅")
         st.rerun()
 
