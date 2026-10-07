@@ -297,11 +297,11 @@ def result_label(row: pd.Series) -> str:
 
 def export_excel(transactions: pd.DataFrame) -> bytes:
     export = transactions.copy()
-    export["Original statement columns"] = export["Original columns"].apply(
-        lambda value: json.dumps(value, ensure_ascii=False)
-    )
     export = export.drop(
-        columns=["Original columns", "Party match key", "Transaction key", "Assigned Business / Party Name", "Name Source"],
+        columns=[
+            "Original columns", "Original statement columns", "Party match key",
+            "Transaction key", "Assigned Business / Party Name", "Name Source", "fingerprint",
+        ],
         errors="ignore",
     )
     output = io.BytesIO()
@@ -538,11 +538,6 @@ def app() -> None:
                     db.clear_all_party_mappings(sb_client)
                 st.toast("Cleared all party mappings.", icon="🗑️")
                 st.rerun()
-
-    with st.expander("Original columns for the matching rows"):
-        for index, row in results.iterrows():
-            st.write(f"**{row['Source file']} — {row['Date']} — {row['UTR / Reference'] or 'No explicit reference'}**")
-            st.json(row["Original columns"])
 
     export = export_excel(results)
     st.download_button(

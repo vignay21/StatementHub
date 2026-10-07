@@ -70,7 +70,7 @@ Choose **Amount** and enter an exact transaction amount, for example `25000`, `2
 
 ## Understanding the results
 
-The table displays Bank, Date, Description, **Party Name**, Amount, Type, UTR / Reference, Balance, and Duplicate UTR. Use **Original columns for the matching rows** to view the populated columns exactly as they appeared in the statement export. Use **Download displayed results as Excel** to save the current search results.
+The table displays Bank, Date, Description, **Party Name**, Amount, Type, UTR / Reference, Balance, and Duplicate UTR. Use **Download displayed results as Excel** to save the current search results.
 
 ## Assign business or party names
 
