@@ -38,14 +38,14 @@ Double-click `run_app.bat` again. The browser normally opens automatically. If i
 StatementHub can connect to **Supabase** (free 500MB cloud PostgreSQL) for persistent storage and multi-device access:
 
 1. Create a free account at [supabase.com](https://supabase.com).
-2. Open your project's **SQL Editor** and run the schema script provided in [`db.py`](file:///d:/Codex/StatementHub/db.py) (or in the app's sidebar).
+2. Open your project's **SQL Editor** and run the schema script provided in [`db.py`](file:///d:/Codex/StatementHub/db.py) (or in the app's setup guide).
 3. Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`:
    ```toml
    [supabase]
    url = "https://your-project-id.supabase.co"
    key = "your-supabase-key"
    ```
-4. Restart the app. The sidebar will indicate `🟢 Supabase Cloud DB: Connected`.
+4. Restart the app. The top header will display `🟢 Supabase Connected`.
 
 ## Search transactions
 
