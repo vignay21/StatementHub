@@ -149,7 +149,8 @@ def read_statement(source: Any, filename: str) -> pd.DataFrame:
     if suffix not in {".xls", ".xlsx"}:
         raise ValueError("Only .csv, .xls, and .xlsx statements are supported.")
     engine = "xlrd" if suffix == ".xls" else "openpyxl"
-    return pd.read_excel(source, header=None, dtype=object, engine=engine)
+    data = source.getvalue() if hasattr(source, "getvalue") else Path(source).read_bytes()
+    return pd.read_excel(io.BytesIO(data), header=None, dtype=object, engine=engine)
 
 
 def extract_identifier(row: pd.Series, reference_col: str | None, description_col: str | None) -> str:
@@ -316,28 +317,24 @@ def search_transactions(transactions: pd.DataFrame, query: str, mode: str) -> pd
     if not query:
         return transactions.copy()
 
-    utr_mask = transactions["UTR / Reference"].fillna("").str.contains(re.escape(query), case=False, regex=True)
+    if mode == "date":
+        is_date = bool(re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", query)) or bool(
+            re.fullmatch(r"\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}", query)
+        )
+        if is_date:
+            parsed_date = pd.to_datetime(query, dayfirst=True, errors="coerce")
+            if not pd.isna(parsed_date):
+                return transactions[transactions["Date"].eq(parsed_date.strftime("%d-%m-%Y"))].copy()
+        return transactions[transactions["Date"].astype(str).str.contains(re.escape(query), case=False, na=False)].copy()
 
-    # Avoid treating ordinary UTR digits as dates. These are the date forms the UI
-    # displays and the common statement-export form users may paste.
-    is_date = bool(re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", query)) or bool(
-        re.fullmatch(r"\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}", query)
-    )
-    if mode == "date" and is_date:
-        parsed_date = pd.to_datetime(query, dayfirst=True, errors="coerce")
-        if not pd.isna(parsed_date):
-            return transactions[transactions["Date"].eq(parsed_date.strftime("%d-%m-%Y"))].copy()
-
-    # Match a number as an amount only when the entire query is an amount. This lets
-    # a numeric UTR still search as an identifier at the same time.
-    if mode == "amount" and re.fullmatch(r"(?:₹|Rs\.?\s*)?\s*[0-9,]+(?:\.\d{1,2})?", query, flags=re.I):
+    if mode == "amount":
         amount = parse_amount(query)
         if amount is not None:
             return transactions[(transactions["Amount"] - amount).abs().le(0.005)].copy()
+        return transactions[transactions["Amount"].astype(str).str.contains(re.escape(query), na=False)].copy()
 
-    if mode == "utr":
-        return transactions[utr_mask].copy()
-    return transactions.iloc[0:0].copy()
+    utr_mask = transactions["UTR / Reference"].fillna("").str.contains(re.escape(query), case=False, regex=True)
+    return transactions[utr_mask].copy()
 
 
 def app() -> None:
@@ -382,72 +379,73 @@ def app() -> None:
         help="Select statements to upload. With Supabase, existing transactions are automatically skipped and only new ones are inserted.",
     )
 
-    combined = pd.DataFrame()
-    imports = []
+    current_file_signature = [(f.name, getattr(f, "size", 0)) for f in files] if files else []
 
-    if files:
+    # Process new uploads ONLY when the file set changes
+    if files and st.session_state.get("last_uploaded_signature") != current_file_signature:
         uploaded_df, imports, errors = load_uploaded(files)
         for error in errors:
             st.error(error)
         if not uploaded_df.empty:
             if sb_client:
                 new_count, skipped_count = db.sync_transactions_with_dedup(sb_client, uploaded_df)
-                st.success(
-                    f"Processed {len(uploaded_df):,} transactions: "
+                st.session_state["upload_msg"] = (
+                    f"Processed {len(uploaded_df):,} transactions from {len(imports)} statement(s): "
                     f"**{new_count:,} new inserted into database**, **{skipped_count:,} duplicates skipped**."
                 )
-                combined = db.fetch_all_transactions(sb_client)
+                st.session_state["cached_transactions"] = db.fetch_all_transactions(sb_client)
             else:
-                combined = uploaded_df
-                st.success(f"Loaded {len(combined):,} transactions from {len(imports)} statement(s).")
-    elif sb_client:
-        stored = db.fetch_all_transactions(sb_client)
-        if not stored.empty:
-            combined = stored
-            st.info(f"Loaded {len(combined):,} historical transactions from Supabase cloud database.")
-        else:
-            st.info("No statements in database yet. Upload statements above to get started.")
-            return
-    else:
-        st.info("Select your bank statements to begin. The app recognizes HDFC-style, ICICI-style, and CSV statement layouts, plus similar variants.")
-        return
+                st.session_state["upload_msg"] = f"Loaded {len(uploaded_df):,} transactions from {len(imports)} statement(s)."
+                st.session_state["cached_transactions"] = uploaded_df
+        st.session_state["last_uploaded_signature"] = current_file_signature
+
+    if not files and not sb_client:
+        st.session_state.pop("cached_transactions", None)
+        st.session_state.pop("upload_msg", None)
+        st.session_state.pop("last_uploaded_signature", None)
+
+    if sb_client and ("cached_transactions" not in st.session_state or st.session_state["cached_transactions"].empty):
+        st.session_state["cached_transactions"] = db.fetch_all_transactions(sb_client)
+
+    combined = st.session_state.get("cached_transactions", pd.DataFrame())
+
+    if "upload_msg" in st.session_state and files:
+        st.success(st.session_state["upload_msg"])
 
     if combined.empty:
+        if sb_client:
+            st.info("No statements in database yet. Upload statements above to get started.")
+        else:
+            st.info("Select your bank statements to begin. The app recognizes HDFC-style, ICICI-style, and CSV statement layouts, plus similar variants.")
         return
 
     combined = apply_assignments(combined, assignments)
 
-    def select_only(selected_key: str) -> None:
-        if st.session_state[selected_key]:
-            for key in ("search_mode_utr", "search_mode_date", "search_mode_amount"):
-                if key != selected_key:
-                    st.session_state[key] = False
+    search_modes = {"UTR / Reference": "utr", "Date": "date", "Amount": "amount"}
+    selected_mode = st.radio("Search by", list(search_modes.keys()), horizontal=True)
+    mode = search_modes[selected_mode]
 
-    if "search_mode_utr" not in st.session_state:
-        st.session_state.search_mode_utr = True
-    for key in ("search_mode_date", "search_mode_amount"):
-        if key not in st.session_state:
-            st.session_state[key] = False
+    if mode == "utr":
+        all_ids = sorted(combined.loc[combined["UTR / Reference"] != "", "UTR / Reference"].drop_duplicates().tolist())
+        effective_query = st.selectbox(
+            "Search UTR / Reference",
+            options=all_ids,
+            index=None,
+            placeholder="Start typing a UTR (for example: 3964)",
+            accept_new_options=True,
+        ) or ""
+    elif mode == "date":
+        effective_query = st.text_input(
+            "Search Date",
+            placeholder="Enter date (e.g. 07-10-2026, 10-2026, or 2026)",
+        ).strip()
+    else:  # amount
+        effective_query = st.text_input(
+            "Search Amount",
+            placeholder="Enter amount (e.g. 25000, 25,000, or ₹25,000)",
+        ).strip()
 
-    mode_cols = st.columns(3)
-    with mode_cols[0]:
-        search_utr = st.checkbox("UTR / Reference", key="search_mode_utr", on_change=select_only, args=("search_mode_utr",))
-    with mode_cols[1]:
-        search_date = st.checkbox("Date", key="search_mode_date", on_change=select_only, args=("search_mode_date",))
-    with mode_cols[2]:
-        search_amount = st.checkbox("Amount", key="search_mode_amount", on_change=select_only, args=("search_mode_amount",))
-    mode = "utr" if search_utr else "date" if search_date else "amount" if search_amount else ""
-
-    all_ids = sorted(combined.loc[combined["UTR / Reference"] != "", "UTR / Reference"].drop_duplicates().tolist()) if mode == "utr" else []
-    placeholder = "Start typing a UTR (for example: 3964)" if mode == "utr" else "Enter a date (01-09-2026)" if mode == "date" else "Enter an amount (25,000)"
-    effective_query = st.selectbox(
-        "Search",
-        options=all_ids,
-        index=None,
-        placeholder=placeholder,
-        accept_new_options=True,
-    ) or ""
-    results = search_transactions(combined, effective_query, mode) if mode else combined.iloc[0:0].copy()
+    results = search_transactions(combined, effective_query, mode)
 
     result_ids = results[results["UTR / Reference"] != ""]["UTR / Reference"]
     duplicated = result_ids[result_ids.duplicated(keep=False)].unique().tolist()
@@ -464,6 +462,8 @@ def app() -> None:
         )
 
     st.caption("💡 Enter or edit party names directly in the **Party Name** column below.")
+
+    results = results.reset_index(drop=True)
 
     display_columns = [
         "Bank", "Date", "Description", "Party Name", "Amount", "Type",
@@ -515,6 +515,8 @@ def app() -> None:
             updated_count += 1
 
         save_assignments(assignments)
+        if "cached_transactions" in st.session_state:
+            st.session_state["cached_transactions"] = apply_assignments(st.session_state["cached_transactions"], assignments)
         st.toast(f"Saved party name for {updated_count} transaction{'s' if updated_count > 1 else ''}.", icon="✅")
         st.rerun()
 

@@ -224,21 +224,34 @@ def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int,
     return len(to_insert), skipped_count
 
 
-def fetch_all_transactions(client: Client, limit: int = 15000) -> pd.DataFrame:
-    """Fetch stored transactions from Supabase into a DataFrame."""
+def fetch_all_transactions(client: Client, limit: int = 50000) -> pd.DataFrame:
+    """Fetch stored transactions from Supabase into a DataFrame using pagination."""
     try:
-        response = (
-            client.table("transactions")
-            .select("id, fingerprint, bank, date, description, party_name, amount, type, utr, balance, party_match_key, source_file")
-            .order("id", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        if not response.data:
+        all_data: list[dict[str, Any]] = []
+        page_size = 1000
+        start = 0
+
+        while start < limit:
+            end = min(start + page_size - 1, limit - 1)
+            response = (
+                client.table("transactions")
+                .select("id, fingerprint, bank, date, description, party_name, amount, type, utr, balance, party_match_key, source_file")
+                .order("id", desc=True)
+                .range(start, end)
+                .execute()
+            )
+            if not response.data:
+                break
+            all_data.extend(response.data)
+            if len(response.data) < page_size:
+                break
+            start += page_size
+
+        if not all_data:
             return pd.DataFrame()
 
         rows = []
-        for r in response.data:
+        for r in all_data:
             rows.append({
                 "Bank": r["bank"],
                 "Date": r["date"],
