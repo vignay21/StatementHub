@@ -301,7 +301,7 @@ def export_excel(transactions: pd.DataFrame) -> bytes:
         lambda value: json.dumps(value, ensure_ascii=False)
     )
     export = export.drop(
-        columns=["Original columns", "Party match key", "Transaction key", "Assigned Business / Party Name"],
+        columns=["Original columns", "Party match key", "Transaction key", "Assigned Business / Party Name", "Name Source"],
         errors="ignore",
     )
     output = io.BytesIO()
@@ -467,7 +467,7 @@ def app() -> None:
 
     display_columns = [
         "Bank", "Date", "Description", "Party Name", "Amount", "Type",
-        "UTR / Reference", "Balance", "Duplicate UTR", "Name Source",
+        "UTR / Reference", "Balance", "Duplicate UTR",
     ]
     edited_results = st.data_editor(
         results[display_columns],
