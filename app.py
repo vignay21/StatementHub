@@ -458,19 +458,49 @@ def inject_keyboard_shortcuts() -> None:
             const parentDoc = window.parent.document;
             if (parentDoc && !parentDoc.hasStatementHubShortcuts) {
                 parentDoc.hasStatementHubShortcuts = true;
+
+                function getSearchInput(doc) {
+                    // 1. Direct placeholder match for search inputs
+                    const byPlaceholder = doc.querySelector(
+                        'input[placeholder*="typing a UTR"], input[placeholder*="Enter date"], input[placeholder*="Enter amount"]'
+                    );
+                    if (byPlaceholder) return byPlaceholder;
+
+                    // 2. Search by label or aria-label, strictly excluding Bank Account, Period, or Date filters
+                    const inputs = Array.from(doc.querySelectorAll('input'));
+                    for (const inp of inputs) {
+                        const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
+                        const ph = (inp.getAttribute('placeholder') || '').toLowerCase();
+                        const widget = inp.closest('[data-testid="stSelectbox"], [data-testid="stTextInput"]');
+                        const lbl = widget ? (widget.querySelector('label')?.innerText || '').toLowerCase() : '';
+
+                        // Exclude Bank Account or Period dropdowns
+                        if (lbl.includes('bank') || aria.includes('bank') || ph.includes('bank')) continue;
+                        if (lbl.includes('period') || aria.includes('period') || ph.includes('period')) continue;
+                        if (lbl.includes('from date') || lbl.includes('to date')) continue;
+
+                        if (
+                            lbl.includes('search utr') || lbl.includes('search date') || lbl.includes('search amount') ||
+                            aria.includes('search utr') || aria.includes('search date') || aria.includes('search amount') ||
+                            ph.includes('utr') || ph.includes('enter date') || ph.includes('enter amount')
+                        ) {
+                            return inp;
+                        }
+                    }
+                    return null;
+                }
+
                 parentDoc.addEventListener('keydown', function(e) {
                     if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
                         e.preventDefault();
                         e.stopPropagation();
 
-                        const target = parentDoc.querySelector(
-                            '[data-testid="stSelectbox"] input, input[aria-label*="Search"], input[placeholder*="Search"], input[placeholder*="Enter amount"]'
-                        );
+                        const target = getSearchInput(parentDoc);
                         if (target) {
                             target.focus();
                             target.select();
                             target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            const container = target.closest('[data-testid="stSelectbox"]') || target;
+                            const container = target.closest('[data-testid="stSelectbox"], [data-testid="stTextInput"]') || target;
                             container.style.transition = 'box-shadow 0.25s ease';
                             container.style.boxShadow = '0 0 0 3px #ff4b4b';
                             setTimeout(() => { container.style.boxShadow = ''; }, 1200);
@@ -486,6 +516,54 @@ def inject_keyboard_shortcuts() -> None:
         height=0,
         width=0,
     )
+
+
+def render_single_copy_btn(text: str, label: str = "📋 Copy UTR") -> None:
+    """Render a 1-click copy button beside the search box or values."""
+    if not text or components is None:
+        return
+    safe_text = str(text).replace("'", "\\'")
+    html_code = f"""
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: flex-end; height: 100%; margin-bottom: 2px;">
+        <button id="copy-utr-btn" onclick="copyUtrSingle('{safe_text}', this)" style="
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            width: 100%;
+            height: 40px;
+            background: #2a2b3d;
+            color: #cdd6f4;
+            border: 1px solid #45475a;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        ">
+            {label}
+        </button>
+    </div>
+    <script>
+    function copyUtrSingle(val, btn) {{
+        navigator.clipboard.writeText(val).then(() => {{
+            btn.innerHTML = '✅ Copied!';
+            btn.style.background = '#2e7d32';
+            btn.style.borderColor = '#81c784';
+            btn.style.color = '#ffffff';
+            setTimeout(() => {{
+                btn.innerHTML = '{label}';
+                btn.style.background = '#2a2b3d';
+                btn.style.borderColor = '#45475a';
+                btn.style.color = '#cdd6f4';
+            }}, 2000);
+        }}).catch(err => {{
+            console.error(err);
+        }});
+    }}
+    </script>
+    """
+    components.html(html_code, height=45)
 
 
 def render_quick_copy_bar(utrs: list[str]) -> None:
@@ -800,13 +878,18 @@ def app() -> None:
 
     if mode == "utr":
         all_ids = sorted(filtered_df.loc[filtered_df["UTR / Reference"] != "", "UTR / Reference"].drop_duplicates().tolist())
-        effective_query = st.selectbox(
-            "Search UTR / Reference",
-            options=all_ids,
-            index=None,
-            placeholder="Start typing a UTR (for example: 3964)",
-            accept_new_options=True,
-        ) or ""
+        col_search, col_copy = st.columns([5, 1], vertical_alignment="bottom")
+        with col_search:
+            effective_query = st.selectbox(
+                "Search UTR / Reference",
+                options=all_ids,
+                index=None,
+                placeholder="Start typing a UTR (for example: 3964)",
+                accept_new_options=True,
+            ) or ""
+        with col_copy:
+            if effective_query:
+                render_single_copy_btn(effective_query, label="📋 Copy UTR")
     elif mode == "date":
         effective_query = st.text_input(
             "Search Date",
@@ -824,9 +907,14 @@ def app() -> None:
     duplicated = result_ids[result_ids.duplicated(keep=False)].unique().tolist()
     if duplicated:
         st.warning(f"Duplicate identifier detected in these results: {', '.join(duplicated[:8])}" + (" …" if len(duplicated) > 8 else ""))
-    col_res_header, col_res_opt = st.columns([2, 1])
+    col_res_header, col_res_copy, col_res_opt = st.columns([2, 2, 2], vertical_alignment="center")
     with col_res_header:
         st.subheader(f"Results ({len(results):,})")
+    with col_res_copy:
+        if len(results) == 1:
+            single_utr = results.iloc[0]["UTR / Reference"]
+            if single_utr:
+                render_single_copy_btn(single_utr, label=f"📋 Copy UTR: {single_utr}")
     with col_res_opt:
         apply_reusable = st.toggle(
             "Apply to all matching transactions",
