@@ -448,65 +448,140 @@ def search_transactions(transactions: pd.DataFrame, query: str, mode: str) -> pd
 
 
 def inject_keyboard_shortcuts() -> None:
-    """Inject global keyboard shortcut (Ctrl+F / Cmd+F) to focus StatementHub's in-app search."""
+    """Inject global keyboard shortcut (Ctrl+F / Cmd+F) to clear previous query and focus StatementHub's in-app search."""
     if components is None:
         return
     components.html(
         """
         <script>
         try {
-            const parentDoc = window.parent.document;
-            if (parentDoc && !parentDoc.hasStatementHubShortcuts) {
-                parentDoc.hasStatementHubShortcuts = true;
-
-                function getSearchInput(doc) {
-                    // 1. Direct placeholder match for search inputs
-                    const byPlaceholder = doc.querySelector(
-                        'input[placeholder*="typing a UTR"], input[placeholder*="Enter date"], input[placeholder*="Enter amount"]'
-                    );
-                    if (byPlaceholder) return byPlaceholder;
-
-                    // 2. Search by label or aria-label, strictly excluding Bank Account, Period, or Date filters
-                    const inputs = Array.from(doc.querySelectorAll('input'));
-                    for (const inp of inputs) {
-                        const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
-                        const ph = (inp.getAttribute('placeholder') || '').toLowerCase();
-                        const widget = inp.closest('[data-testid="stSelectbox"], [data-testid="stTextInput"]');
-                        const lbl = widget ? (widget.querySelector('label')?.innerText || '').toLowerCase() : '';
-
-                        // Exclude Bank Account or Period dropdowns
-                        if (lbl.includes('bank') || aria.includes('bank') || ph.includes('bank')) continue;
-                        if (lbl.includes('period') || aria.includes('period') || ph.includes('period')) continue;
-                        if (lbl.includes('from date') || lbl.includes('to date')) continue;
-
-                        if (
-                            lbl.includes('search utr') || lbl.includes('search date') || lbl.includes('search amount') ||
-                            aria.includes('search utr') || aria.includes('search date') || aria.includes('search amount') ||
-                            ph.includes('utr') || ph.includes('enter date') || ph.includes('enter amount')
-                        ) {
-                            return inp;
+            function getSearchWidgetAndInput(doc) {
+                if (!doc) return { widget: null, input: null };
+                // 1. Precise match by label text
+                const labels = Array.from(doc.querySelectorAll('label'));
+                for (const lbl of labels) {
+                    const txt = (lbl.innerText || '').toLowerCase().trim();
+                    if (txt.includes('search utr') || txt.includes('search date') || txt.includes('search amount')) {
+                        const widget = lbl.closest('[data-testid="stSelectbox"], [data-testid="stTextInput"]');
+                        if (widget) {
+                            return { widget, input: widget.querySelector('input') };
                         }
                     }
-                    return null;
                 }
 
-                parentDoc.addEventListener('keydown', function(e) {
-                    if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
-                        e.preventDefault();
-                        e.stopPropagation();
+                // 2. Placeholder match
+                const byPlaceholder = doc.querySelector(
+                    'input[placeholder*="typing a UTR"], input[placeholder*="Enter date"], input[placeholder*="Enter amount"]'
+                );
+                if (byPlaceholder) {
+                    const widget = byPlaceholder.closest('[data-testid="stSelectbox"], [data-testid="stTextInput"]');
+                    return { widget, input: byPlaceholder };
+                }
 
-                        const target = getSearchInput(parentDoc);
-                        if (target) {
-                            target.focus();
-                            target.select();
-                            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            const container = target.closest('[data-testid="stSelectbox"], [data-testid="stTextInput"]') || target;
-                            container.style.transition = 'box-shadow 0.25s ease';
-                            container.style.boxShadow = '0 0 0 3px #ff4b4b';
-                            setTimeout(() => { container.style.boxShadow = ''; }, 1200);
+                // 3. Fallback scan across all inputs, strictly excluding Bank Account / Period / Date filters
+                const inputs = Array.from(doc.querySelectorAll('input'));
+                for (const inp of inputs) {
+                    const widget = inp.closest('[data-testid="stSelectbox"], [data-testid="stTextInput"]');
+                    const lbl = widget ? (widget.querySelector('label')?.innerText || '').toLowerCase() : '';
+                    const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
+                    const ph = (inp.getAttribute('placeholder') || '').toLowerCase();
+
+                    if (lbl.includes('bank') || aria.includes('bank') || ph.includes('bank')) continue;
+                    if (lbl.includes('period') || aria.includes('period') || ph.includes('period')) continue;
+                    if (lbl.includes('from date') || lbl.includes('to date')) continue;
+
+                    if (
+                        lbl.includes('utr') || lbl.includes('search') ||
+                        aria.includes('utr') || aria.includes('search') ||
+                        ph.includes('utr') || ph.includes('search')
+                    ) {
+                        return { widget, input: inp };
+                    }
+                }
+                return { widget: null, input: null };
+            }
+
+            function triggerClear(widget, input) {
+                // For st.selectbox (UTR search): click BaseWeb's Clear (x) button if a value is selected
+                if (widget) {
+                    const clearBtn = widget.querySelector(
+                        '[aria-label*="Clear" i], [aria-label*="clear" i], [title*="Clear" i], [title*="clear" i]'
+                    );
+                    if (clearBtn) {
+                        const clickTarget = clearBtn.closest('[role="button"]') || clearBtn.parentElement || clearBtn;
+                        clickTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                        clickTarget.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                        clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                        if (clickTarget.click) clickTarget.click();
+                    } else {
+                        // In BaseWeb selectbox, when an option is selected, there are >= 2 SVGs:
+                        // 1st SVG is the Clear (x) icon, 2nd SVG is the dropdown chevron
+                        const svgs = widget.querySelectorAll('[data-baseweb="select"] svg');
+                        if (svgs.length >= 2) {
+                            const clearSvg = svgs[0];
+                            const clickTarget = clearSvg.closest('[role="button"]') || clearSvg.parentElement || clearSvg;
+                            clickTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                            clickTarget.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                            clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                            if (clickTarget.click) clickTarget.click();
                         }
                     }
-                }, true);
+                }
+
+                // Also clear text input directly for st.text_input (Date/Amount mode) or any typed text
+                if (input) {
+                    input.value = '';
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }
+
+            function handleShortcut(e) {
+                if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    const parentDoc = window.parent.document;
+                    const { widget, input } = getSearchWidgetAndInput(parentDoc);
+                    if (!widget && !input) return;
+
+                    // Automatically clear any previous UTR / search query
+                    triggerClear(widget, input);
+
+                    // Highlight the search bar with accent glow and scroll into view
+                    const container = widget || input;
+                    if (container) {
+                        container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        container.style.transition = 'box-shadow 0.25s ease';
+                        container.style.boxShadow = '0 0 0 3px #ff4b4b';
+                        setTimeout(() => { container.style.boxShadow = ''; }, 1200);
+                    }
+
+                    // Focus the empty input ready for immediate typing
+                    setTimeout(() => {
+                        const targetInput = (widget ? widget.querySelector('input') : null) || input;
+                        if (targetInput) {
+                            targetInput.focus();
+                            if (targetInput.select) targetInput.select();
+                        }
+                    }, 70);
+                }
+            }
+
+            const parentDoc = window.parent.document;
+            if (parentDoc) {
+                if (parentDoc._stmtHubKeyHandler) {
+                    parentDoc.removeEventListener('keydown', parentDoc._stmtHubKeyHandler, true);
+                }
+                parentDoc._stmtHubKeyHandler = handleShortcut;
+                parentDoc.addEventListener('keydown', parentDoc._stmtHubKeyHandler, true);
+            }
+            if (document) {
+                if (document._stmtHubKeyHandler) {
+                    document.removeEventListener('keydown', document._stmtHubKeyHandler, true);
+                }
+                document._stmtHubKeyHandler = handleShortcut;
+                document.addEventListener('keydown', document._stmtHubKeyHandler, true);
             }
         } catch(e) {
             console.error('StatementHub shortcut init error:', e);
@@ -564,103 +639,6 @@ def render_single_copy_btn(text: str, label: str = "📋 Copy UTR") -> None:
     </script>
     """
     components.html(html_code, height=45)
-
-
-def render_quick_copy_bar(utrs: list[str]) -> None:
-    """Render interactive one-click copy buttons for UTR/Reference values."""
-    if not utrs or components is None:
-        return
-
-    clean_utrs = []
-    seen = set()
-    for u in utrs:
-        u_clean = str(u).strip()
-        if u_clean and u_clean not in seen:
-            seen.add(u_clean)
-            clean_utrs.append(u_clean)
-
-    if not clean_utrs:
-        return
-
-    buttons_html = "".join([
-        f'<button class="copy-chip" onclick="copyUtr(\'{u}\', this)">'
-        f'<span class="icon">📋</span> <span class="val">{u}</span>'
-        f'</button>'
-        for u in clean_utrs[:15]
-    ])
-
-    html_code = f"""
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin-bottom: 8px;">
-        <style>
-            .utr-bar {{
-                display: flex;
-                flex-wrap: wrap;
-                align-items: center;
-                gap: 6px;
-                background: #1e1e2e;
-                padding: 6px 10px;
-                border-radius: 8px;
-                border: 1px solid #313244;
-            }}
-            .utr-label {{
-                font-size: 12px;
-                font-weight: 600;
-                color: #cdd6f4;
-                margin-right: 2px;
-                display: flex;
-                align-items: center;
-                gap: 4px;
-            }}
-            .copy-chip {{
-                display: inline-flex;
-                align-items: center;
-                gap: 5px;
-                background: #2a2b3d;
-                color: #89b4fa;
-                border: 1px solid #45475a;
-                border-radius: 6px;
-                padding: 3px 9px;
-                font-size: 12px;
-                font-family: 'Consolas', 'Monaco', monospace;
-                font-weight: 500;
-                cursor: pointer;
-                transition: all 0.15s ease-in-out;
-            }}
-            .copy-chip:hover {{
-                background: #3b3c54;
-                border-color: #b4befe;
-                color: #ffffff;
-                transform: translateY(-1px);
-            }}
-            .copy-chip.copied {{
-                background: #2e7d32 !important;
-                color: #ffffff !important;
-                border-color: #81c784 !important;
-            }}
-        </style>
-        <div class="utr-bar">
-            <span class="utr-label">📋 Copy UTR:</span>
-            {buttons_html}
-        </div>
-    </div>
-    <script>
-    function copyUtr(text, btn) {{
-        navigator.clipboard.writeText(text).then(() => {{
-            const prev = btn.innerHTML;
-            btn.innerHTML = '✅ Copied!';
-            btn.classList.add('copied');
-            setTimeout(() => {{
-                btn.innerHTML = prev;
-                btn.classList.remove('copied');
-            }}, 1800);
-        }}).catch(err => {{
-            console.error('Failed to copy to clipboard:', err);
-        }});
-    }}
-    </script>
-    """
-    height = 42 if len(clean_utrs) <= 6 else 75
-    components.html(html_code, height=height)
 
 
 def render_backup_restore_section(combined: pd.DataFrame, assignments: dict[str, Any], sb_client: Any) -> None:
@@ -907,14 +885,9 @@ def app() -> None:
     duplicated = result_ids[result_ids.duplicated(keep=False)].unique().tolist()
     if duplicated:
         st.warning(f"Duplicate identifier detected in these results: {', '.join(duplicated[:8])}" + (" …" if len(duplicated) > 8 else ""))
-    col_res_header, col_res_copy, col_res_opt = st.columns([2, 2, 2], vertical_alignment="center")
+    col_res_header, col_res_opt = st.columns([2, 1], vertical_alignment="center")
     with col_res_header:
         st.subheader(f"Results ({len(results):,})")
-    with col_res_copy:
-        if len(results) == 1:
-            single_utr = results.iloc[0]["UTR / Reference"]
-            if single_utr:
-                render_single_copy_btn(single_utr, label=f"📋 Copy UTR: {single_utr}")
     with col_res_opt:
         apply_reusable = st.toggle(
             "Apply to all matching transactions",
@@ -923,10 +896,6 @@ def app() -> None:
         )
 
     st.caption("💡 Enter or edit party names directly in the **Party Name** column below.")
-
-    unique_utrs = [u for u in results["UTR / Reference"].dropna().unique().tolist() if str(u).strip()]
-    if unique_utrs:
-        render_quick_copy_bar(unique_utrs)
 
     results = results.reset_index(drop=True)
 
