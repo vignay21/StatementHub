@@ -225,13 +225,32 @@ def read_statement(source: Any, filename: str) -> pd.DataFrame:
 
 
 def extract_identifier(row: pd.Series, reference_col: str | None, description_col: str | None) -> str:
+    description = clean_text(row.get(description_col, "")) if description_col else ""
+
+    # 1. Cheque Clearing transactions: extract the actual 6-digit cheque number
+    if "CLG" in description.upper():
+        clg_parts = [p.strip() for p in description.split("/") if p.strip()]
+        if len(clg_parts) >= 3 and clg_parts[0].upper() == "CLG":
+            if clg_parts[2].isdigit():
+                return clg_parts[2]
+            elif clg_parts[1].isdigit():
+                return clg_parts[1]
+        chq_match = re.search(r"\bCLG/[^/]+/(\d{6,8})\b", description, re.I)
+        if chq_match:
+            return chq_match.group(1)
+
+    # 2. General cheque pattern (e.g. CHEQUE NO. 123456 or CHQ/123456)
+    chq_gen = re.search(r"\b(?:chq|cheque|cheq|chk)\b[^\w\n]*(\d{6,8})\b", description, re.I)
+    if chq_gen:
+        return chq_gen.group(1)
+
     direct = clean_text(row.get(reference_col, "")) if reference_col else ""
     # Prefer a populated cheque/reference field. ICICI's internal Tran. Id (S123...) is
     # less useful than the UPI/NEFT identifier embedded in its remarks.
     if direct and direct.lower() not in {"0", "000000000000", "nan"} and not re.fullmatch(r"[SM]\d+", direct, re.I):
         return direct
-    description = clean_text(row.get(description_col, "")) if description_col else ""
-    # UTRs and UPI references are normally an all-numeric 12+ digit segment, or a
+
+    # 3. UTRs and UPI references are normally an all-numeric 12+ digit segment, or a
     # bank prefix such as IN followed by digits. Keep the complete matching segment.
     identifiers = re.findall(
         r"(?<![A-Za-z0-9])(?:CNRBH\d{8,}|IN\d{12,}|\d{12,})(?![A-Za-z0-9])",
@@ -239,6 +258,9 @@ def extract_identifier(row: pd.Series, reference_col: str | None, description_co
         flags=re.I,
     )
     if identifiers:
+        valid_ids = [i for i in identifiers if not (len(i) > 24 and i.startswith("202"))]
+        if valid_ids:
+            return valid_ids[0]
         return identifiers[0]
     return direct if direct.lower() not in {"0", "000000000000", "nan"} else ""
 
@@ -350,6 +372,19 @@ def apply_assignments(transactions: pd.DataFrame, assignments: dict[str, dict[st
     transactions = transactions.copy()
     if "Description" in transactions.columns:
         transactions["Party match key"] = transactions["Description"].apply(party_match_key)
+        def clean_clg_ref(row: pd.Series) -> str:
+            desc = clean_text(row.get("Description", ""))
+            curr = clean_text(row.get("UTR / Reference", ""))
+            if "CLG" in desc.upper() and (len(curr) > 20 or not curr):
+                parts = [p.strip() for p in desc.split("/") if p.strip()]
+                if len(parts) >= 3 and parts[0].upper() == "CLG":
+                    if parts[2].isdigit():
+                        return parts[2]
+                    elif parts[1].isdigit():
+                        return parts[1]
+            return curr
+        if "UTR / Reference" in transactions.columns:
+            transactions["UTR / Reference"] = transactions.apply(clean_clg_ref, axis=1)
     mapped = transactions["Party match key"].map(assignments["party_mappings"]).fillna("")
     overrides = transactions["Transaction key"].map(assignments["transaction_overrides"]).fillna("")
     party_names = overrides.where(overrides.ne(""), mapped)
