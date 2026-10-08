@@ -1,0 +1,39 @@
+name: Supabase Keep-Alive
+
+on:
+  schedule:
+    # Runs every 3 days at 06:00 UTC (keeps the free Supabase database awake 24/7/365)
+    - cron: '0 6 */3 * *'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab anytime
+
+jobs:
+  keep-alive:
+    name: Ping Supabase Database
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST API
+        run: |
+          SUPABASE_URL="${{ secrets.SUPABASE_URL }}"
+          SUPABASE_KEY="${{ secrets.SUPABASE_KEY }}"
+
+          # Fallback to StatementHub project URL if repository secret is not yet configured
+          if [ -z "$SUPABASE_URL" ]; then
+            SUPABASE_URL="https://lllrsaddqgzdsqzmvnnt.supabase.co"
+          fi
+
+          if [ -z "$SUPABASE_KEY" ]; then
+            echo "::notice ::SUPABASE_KEY secret not found in repository secrets. Pinging public endpoint."
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$SUPABASE_URL/rest/v1/")
+          else
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "apikey: $SUPABASE_KEY" \
+              -H "Authorization: Bearer $SUPABASE_KEY" \
+              "$SUPABASE_URL/rest/v1/party_mappings?select=match_key&limit=1")
+          fi
+
+          echo "Supabase keep-alive ping response HTTP status: $STATUS"
+          if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 400 ]; then
+            echo "✅ Supabase database is active and awake!"
+          else
+            echo "⚠️ Received HTTP status $STATUS (database pinged)"
+          fi

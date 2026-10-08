@@ -21,8 +21,10 @@ import db
 
 try:
     import streamlit as st
+    import streamlit.components.v1 as components
 except ModuleNotFoundError:  # Enables parser verification before the UI dependency is installed.
     st = None
+    components = None
 
 
 HEADER_ALIASES = {
@@ -445,6 +447,144 @@ def search_transactions(transactions: pd.DataFrame, query: str, mode: str) -> pd
     return transactions[utr_mask].copy()
 
 
+def inject_keyboard_shortcuts() -> None:
+    """Inject global keyboard shortcut (Ctrl+F / Cmd+F) to focus StatementHub's in-app search."""
+    if components is None:
+        return
+    components.html(
+        """
+        <script>
+        try {
+            const parentDoc = window.parent.document;
+            if (parentDoc && !parentDoc.hasStatementHubShortcuts) {
+                parentDoc.hasStatementHubShortcuts = true;
+                parentDoc.addEventListener('keydown', function(e) {
+                    if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+                        e.preventDefault();
+                        e.stopPropagation();
+
+                        const target = parentDoc.querySelector(
+                            '[data-testid="stSelectbox"] input, input[aria-label*="Search"], input[placeholder*="Search"], input[placeholder*="Enter amount"]'
+                        );
+                        if (target) {
+                            target.focus();
+                            target.select();
+                            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            const container = target.closest('[data-testid="stSelectbox"]') || target;
+                            container.style.transition = 'box-shadow 0.25s ease';
+                            container.style.boxShadow = '0 0 0 3px #ff4b4b';
+                            setTimeout(() => { container.style.boxShadow = ''; }, 1200);
+                        }
+                    }
+                }, true);
+            }
+        } catch(e) {
+            console.error('StatementHub shortcut init error:', e);
+        }
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def render_quick_copy_bar(utrs: list[str]) -> None:
+    """Render interactive one-click copy buttons for UTR/Reference values."""
+    if not utrs or components is None:
+        return
+
+    clean_utrs = []
+    seen = set()
+    for u in utrs:
+        u_clean = str(u).strip()
+        if u_clean and u_clean not in seen:
+            seen.add(u_clean)
+            clean_utrs.append(u_clean)
+
+    if not clean_utrs:
+        return
+
+    buttons_html = "".join([
+        f'<button class="copy-chip" onclick="copyUtr(\'{u}\', this)">'
+        f'<span class="icon">📋</span> <span class="val">{u}</span>'
+        f'</button>'
+        for u in clean_utrs[:15]
+    ])
+
+    html_code = f"""
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin-bottom: 8px;">
+        <style>
+            .utr-bar {{
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 6px;
+                background: #1e1e2e;
+                padding: 6px 10px;
+                border-radius: 8px;
+                border: 1px solid #313244;
+            }}
+            .utr-label {{
+                font-size: 12px;
+                font-weight: 600;
+                color: #cdd6f4;
+                margin-right: 2px;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }}
+            .copy-chip {{
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+                background: #2a2b3d;
+                color: #89b4fa;
+                border: 1px solid #45475a;
+                border-radius: 6px;
+                padding: 3px 9px;
+                font-size: 12px;
+                font-family: 'Consolas', 'Monaco', monospace;
+                font-weight: 500;
+                cursor: pointer;
+                transition: all 0.15s ease-in-out;
+            }}
+            .copy-chip:hover {{
+                background: #3b3c54;
+                border-color: #b4befe;
+                color: #ffffff;
+                transform: translateY(-1px);
+            }}
+            .copy-chip.copied {{
+                background: #2e7d32 !important;
+                color: #ffffff !important;
+                border-color: #81c784 !important;
+            }}
+        </style>
+        <div class="utr-bar">
+            <span class="utr-label">📋 Copy UTR:</span>
+            {buttons_html}
+        </div>
+    </div>
+    <script>
+    function copyUtr(text, btn) {{
+        navigator.clipboard.writeText(text).then(() => {{
+            const prev = btn.innerHTML;
+            btn.innerHTML = '✅ Copied!';
+            btn.classList.add('copied');
+            setTimeout(() => {{
+                btn.innerHTML = prev;
+                btn.classList.remove('copied');
+            }}, 1800);
+        }}).catch(err => {{
+            console.error('Failed to copy to clipboard:', err);
+        }});
+    }}
+    </script>
+    """
+    height = 42 if len(clean_utrs) <= 6 else 75
+    components.html(html_code, height=height)
+
+
 def render_backup_restore_section(combined: pd.DataFrame, assignments: dict[str, Any], sb_client: Any) -> None:
     with st.expander("💾 Backup & Restore Center"):
         st.markdown("**Create an offline backup or restore your database & party mappings.**")
@@ -519,6 +659,7 @@ def app() -> None:
         raise RuntimeError("The browser interface needs Streamlit. Run: pip install -r requirements.txt")
     st.set_page_config(page_title="Unified Bank Search", page_icon="🔎", layout="wide")
     sb_client = db.get_supabase_client()
+    inject_keyboard_shortcuts()
 
     col_title, col_status = st.columns([4, 1], vertical_alignment="center")
     with col_title:
@@ -694,6 +835,10 @@ def app() -> None:
         )
 
     st.caption("💡 Enter or edit party names directly in the **Party Name** column below.")
+
+    unique_utrs = [u for u in results["UTR / Reference"].dropna().unique().tolist() if str(u).strip()]
+    if unique_utrs:
+        render_quick_copy_bar(unique_utrs)
 
     results = results.reset_index(drop=True)
 
