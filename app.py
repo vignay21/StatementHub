@@ -41,6 +41,7 @@ HEADER_ALIASES = {
 }
 
 ASSIGNMENTS_PATH = Path.home() / ".statementhub" / "party_assignments.json"
+PARTY_STORE_PATH = Path.home() / ".statementhub" / "stored_parties.json"
 
 
 @dataclass
@@ -302,6 +303,7 @@ def normalize_statement(source: Any, filename: str) -> ImportedStatement:
             "Type": transaction_type,
             "UTR / Reference": extract_identifier(row, reference_col, description_col),
             "Description": description,
+            "Party Name": "",
             "Party match key": party_match_key(description),
             "Balance": parse_amount(row.get(balance_col)) if balance_col else None,
             "Original columns": original,
@@ -370,7 +372,89 @@ def save_assignments(assignments: dict[str, dict[str, str]]) -> None:
     ASSIGNMENTS_PATH.write_text(json.dumps(assignments, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def apply_assignments(transactions: pd.DataFrame, assignments: dict[str, dict[str, str]]) -> pd.DataFrame:
+def load_stored_party_names(sb_client: Any = None, current_df: pd.DataFrame = None) -> list[str]:
+    """Load distinct stored party names from local disk, DataFrame, and Supabase for auto-completion."""
+    names_set: set[str] = set()
+
+    # 1. Local stored parties file
+    if PARTY_STORE_PATH.exists():
+        try:
+            data = json.loads(PARTY_STORE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                names_set.update(data)
+            elif isinstance(data, dict):
+                names_set.update(data.get("stored_party_names", []))
+        except Exception:
+            pass
+
+    # 2. Legacy assignments file for seamless migration
+    if ASSIGNMENTS_PATH.exists():
+        try:
+            data = json.loads(ASSIGNMENTS_PATH.read_text(encoding="utf-8"))
+            names_set.update(data.get("party_mappings", {}).values())
+            names_set.update(data.get("transaction_overrides", {}).values())
+        except Exception:
+            pass
+
+    # 3. Current transactions DataFrame
+    if current_df is not None and not current_df.empty and "Party Name" in current_df.columns:
+        vals = current_df["Party Name"].dropna().astype(str).str.strip().tolist()
+        names_set.update([v for v in vals if v and v.lower() != "nan"])
+
+    # 4. Supabase
+    if sb_client:
+        try:
+            sb_names = db.fetch_party_names(sb_client)
+            names_set.update(sb_names)
+        except Exception:
+            pass
+
+    clean_list = sorted({re.sub(r"\s+", " ", str(n)).strip() for n in names_set if clean_text(n)})
+    return clean_list
+
+
+def save_stored_party_names(names: list[str], sb_client: Any = None) -> None:
+    """Save stored party names to local JSON and sync to Supabase."""
+    clean_list = sorted({re.sub(r"\s+", " ", str(n)).strip() for n in names if clean_text(n)})
+    PARTY_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PARTY_STORE_PATH.write_text(json.dumps(clean_list, indent=2, ensure_ascii=False), encoding="utf-8")
+    if sb_client:
+        for name in clean_list:
+            try:
+                db.save_party_name(sb_client, name)
+            except Exception:
+                pass
+
+
+def assign_party_name_to_transactions(
+    fingerprints: list[str],
+    new_party_name: str,
+    combined_df: pd.DataFrame,
+    sb_client: Any = None,
+) -> int:
+    """Assign party name to given transactions and register party name for auto-completion."""
+    new_party_name = clean_text(new_party_name).strip()
+    if not fingerprints or combined_df is None or combined_df.empty:
+        return 0
+
+    mask = combined_df["fingerprint"].isin(fingerprints)
+    combined_df.loc[mask, "Party Name"] = new_party_name
+
+    # Update in Supabase
+    if sb_client:
+        db.update_transactions_party_bulk(sb_client, fingerprints, new_party_name)
+
+    # Automatically store new party name for autocomplete suggestions
+    if new_party_name:
+        current_stored = load_stored_party_names(sb_client, combined_df)
+        if new_party_name not in current_stored:
+            current_stored.append(new_party_name)
+            save_stored_party_names(current_stored, sb_client)
+
+    return int(mask.sum())
+
+
+def apply_assignments(transactions: pd.DataFrame, assignments: dict[str, Any] = None) -> pd.DataFrame:
     transactions = transactions.copy()
     if "Description" in transactions.columns:
         transactions["Party match key"] = transactions["Description"].apply(party_match_key)
@@ -387,14 +471,22 @@ def apply_assignments(transactions: pd.DataFrame, assignments: dict[str, dict[st
             return curr
         if "UTR / Reference" in transactions.columns:
             transactions["UTR / Reference"] = transactions.apply(clean_clg_ref, axis=1)
-    mapped = transactions["Party match key"].map(assignments["party_mappings"]).fillna("")
-    overrides = transactions["Transaction key"].map(assignments["transaction_overrides"]).fillna("")
-    party_names = overrides.where(overrides.ne(""), mapped)
-    transactions["Party Name"] = party_names
-    transactions["Assigned Business / Party Name"] = party_names
-    transactions["Name Source"] = ""
-    transactions.loc[mapped.ne(""), "Name Source"] = "Sender/receiver mapping"
-    transactions.loc[overrides.ne(""), "Name Source"] = "Transaction override"
+
+    if "Party Name" not in transactions.columns:
+        transactions["Party Name"] = ""
+    else:
+        transactions["Party Name"] = transactions["Party Name"].fillna("").astype(str).str.strip()
+
+    # Backwards compatibility: if a row's Party Name is empty, populate from legacy overrides if present
+    if assignments:
+        empty_mask = transactions["Party Name"].eq("")
+        if empty_mask.any():
+            overrides = transactions.loc[empty_mask, "Transaction key"].map(assignments.get("transaction_overrides", {})).fillna("")
+            mapped = transactions.loc[empty_mask, "Party match key"].map(assignments.get("party_mappings", {})).fillna("")
+            legacy_names = overrides.where(overrides.ne(""), mapped)
+            transactions.loc[empty_mask, "Party Name"] = legacy_names.fillna("")
+
+    transactions["Assigned Business / Party Name"] = transactions["Party Name"]
     return transactions
 
 
@@ -643,18 +735,20 @@ def render_single_copy_btn(text: str, label: str = "📋 Copy UTR") -> None:
 
 def render_backup_restore_section(combined: pd.DataFrame, assignments: dict[str, Any], sb_client: Any) -> None:
     with st.expander("💾 Backup & Restore Center"):
-        st.markdown("**Create an offline backup or restore your database & party mappings.**")
+        st.markdown("**Create an offline backup or restore your database & stored party names.**")
+        stored_parties = load_stored_party_names(sb_client, combined)
         b_col1, b_col2 = st.columns(2)
         with b_col1:
             st.write("**Download Complete Backup**")
-            st.caption(f"• **Transactions:** {len(combined):,} records\n• **Party Mappings:** {len(assignments.get('party_mappings', {}))} rules")
-            if not combined.empty:
-                txns_list = json.loads(combined.to_json(orient="records", date_format="iso"))
+            st.caption(f"• **Transactions:** {len(combined):,} records\n• **Stored Party Names:** {len(stored_parties)} names")
+            if not combined.empty or stored_parties:
+                txns_list = json.loads(combined.to_json(orient="records", date_format="iso")) if not combined.empty else []
                 backup_data = {
-                    "version": "1.0",
+                    "version": "2.0",
                     "exported_at": datetime.now().isoformat(),
                     "total_transactions": len(combined),
-                    "total_party_mappings": len(assignments.get("party_mappings", {})),
+                    "total_stored_party_names": len(stored_parties),
+                    "stored_party_names": stored_parties,
                     "party_mappings": assignments.get("party_mappings", {}),
                     "transaction_overrides": assignments.get("transaction_overrides", {}),
                     "transactions": txns_list,
@@ -666,10 +760,10 @@ def render_backup_restore_section(combined: pd.DataFrame, assignments: dict[str,
                     data=backup_bytes,
                     file_name=f"statementhub_backup_{timestamp_str}.json",
                     mime="application/json",
-                    help="Downloads all transactions and party mappings to a secure JSON file",
+                    help="Downloads all transactions and stored party names to a secure JSON file",
                 )
             else:
-                st.caption("No transactions available to backup yet.")
+                st.caption("No transactions or party names available to backup yet.")
 
         with b_col2:
             st.write("**Restore Database from Backup**")
@@ -683,19 +777,20 @@ def render_backup_restore_section(combined: pd.DataFrame, assignments: dict[str,
                 try:
                     loaded_backup = json.loads(restore_file.getvalue().decode("utf-8"))
                     restored_txns = loaded_backup.get("transactions", [])
-                    restored_mappings = loaded_backup.get("party_mappings", {})
-                    restored_overrides = loaded_backup.get("transaction_overrides", {})
+                    restored_stored = loaded_backup.get("stored_party_names", [])
+                    # Fallback to legacy party_mappings if present
+                    if not restored_stored and "party_mappings" in loaded_backup:
+                        restored_stored = list(set(loaded_backup.get("party_mappings", {}).values()))
 
-                    st.info(f"Found **{len(restored_txns):,} transactions** and **{len(restored_mappings)} party mappings** in backup.")
+                    st.info(f"Found **{len(restored_txns):,} transactions** and **{len(restored_stored)} stored party names** in backup.")
 
                     if st.button("🚀 Restore Now", type="primary"):
-                        assignments["party_mappings"].update(restored_mappings)
-                        assignments["transaction_overrides"].update(restored_overrides)
-                        save_assignments(assignments)
+                        if restored_stored:
+                            all_parties = load_stored_party_names(sb_client, combined)
+                            all_parties = sorted(set(all_parties) | set(restored_stored))
+                            save_stored_party_names(all_parties, sb_client)
 
                         if sb_client:
-                            for k, v in restored_mappings.items():
-                                db.save_party_mapping(sb_client, k, v)
                             if restored_txns:
                                 r_df = pd.DataFrame(restored_txns)
                                 db.sync_transactions_with_dedup(sb_client, r_df)
@@ -704,7 +799,7 @@ def render_backup_restore_section(combined: pd.DataFrame, assignments: dict[str,
                             if restored_txns:
                                 st.session_state["cached_transactions"] = pd.DataFrame(restored_txns)
 
-                        st.toast("Database and party mappings restored successfully!", icon="✅")
+                        st.toast("Database and stored party names restored successfully!", icon="✅")
                         st.rerun()
                 except Exception as exc:
                     st.error(f"Invalid backup file format: {exc}")
@@ -885,17 +980,79 @@ def app() -> None:
     duplicated = result_ids[result_ids.duplicated(keep=False)].unique().tolist()
     if duplicated:
         st.warning(f"Duplicate identifier detected in these results: {', '.join(duplicated[:8])}" + (" …" if len(duplicated) > 8 else ""))
-    col_res_header, col_res_opt = st.columns([2, 1], vertical_alignment="center")
-    with col_res_header:
-        st.subheader(f"Results ({len(results):,})")
-    with col_res_opt:
-        apply_reusable = st.toggle(
-            "Apply to all matching transactions",
-            value=True,
-            help="When turned on, saving a party name will automatically apply to all past and future transactions with the same sender/receiver. When turned off, it applies only to that specific transaction.",
-        )
+    stored_party_names = load_stored_party_names(sb_client, combined)
 
-    st.caption("💡 Enter or edit party names directly in the **Party Name** column below.")
+    st.subheader(f"Results ({len(results):,})")
+
+    # 1. Quick Assign Party Name with live auto-completion while typing
+    if len(results) == 1:
+        single_row = results.iloc[0]
+        curr_p = clean_text(single_row.get("Party Name", ""))
+        curr_idx = stored_party_names.index(curr_p) if curr_p in stored_party_names else None
+
+        col_p_label, col_p_input, col_p_save, col_p_clr = st.columns([1.5, 4, 1.2, 0.8], vertical_alignment="bottom")
+        with col_p_label:
+            st.markdown("**Party Name:**")
+            if curr_p:
+                st.caption(f"Current: `{curr_p}`")
+            else:
+                st.caption("Not assigned yet")
+        with col_p_input:
+            selected_party = st.selectbox(
+                "Party Name (with live autocomplete)",
+                options=stored_party_names,
+                index=curr_idx,
+                placeholder="Start typing party name for autocomplete suggestions...",
+                accept_new_options=True,
+                key=f"party_autocomplete_{single_row['fingerprint']}",
+                label_visibility="collapsed",
+            )
+        with col_p_save:
+            if st.button("💾 Save Party", type="primary", use_container_width=True, key="btn_save_single_party"):
+                if selected_party:
+                    assign_party_name_to_transactions(
+                        [single_row["fingerprint"]],
+                        selected_party,
+                        combined,
+                        sb_client,
+                    )
+                    st.session_state["cached_transactions"] = combined
+                    st.toast(f"Saved party name: {selected_party}", icon="✅")
+                    st.rerun()
+        with col_p_clr:
+            if curr_p and st.button("🗑️", help="Remove party name from this transaction", use_container_width=True, key="btn_clear_single_party"):
+                assign_party_name_to_transactions(
+                    [single_row["fingerprint"]],
+                    "",
+                    combined,
+                    sb_client,
+                )
+                st.session_state["cached_transactions"] = combined
+                st.toast("Party name removed from transaction.", icon="🗑️")
+                st.rerun()
+
+    elif len(results) > 1:
+        with st.expander(f"🏷️ Assign Party Name to all {len(results):,} filtered transactions"):
+            col_bulk_input, col_bulk_btn = st.columns([4, 1.5], vertical_alignment="bottom")
+            with col_bulk_input:
+                bulk_party_val = st.selectbox(
+                    "Select or type party name for filtered results",
+                    options=stored_party_names,
+                    index=None,
+                    placeholder="Start typing party name for autocomplete suggestions...",
+                    accept_new_options=True,
+                    key="party_autocomplete_bulk",
+                )
+            with col_bulk_btn:
+                if st.button(f"💾 Apply to all {len(results):,}", type="primary", use_container_width=True, key="btn_save_bulk_party"):
+                    if bulk_party_val:
+                        fps = results["fingerprint"].tolist()
+                        assign_party_name_to_transactions(fps, bulk_party_val, combined, sb_client)
+                        st.session_state["cached_transactions"] = combined
+                        st.toast(f"Assigned '{bulk_party_val}' to {len(fps)} transactions.", icon="✅")
+                        st.rerun()
+
+    st.caption("💡 You can also edit party names directly in the **Party Name** column in the table below.")
 
     results = results.reset_index(drop=True)
 
@@ -919,7 +1076,7 @@ def app() -> None:
             "Balance": st.column_config.NumberColumn(format="₹ %0.2f"),
             "Party Name": st.column_config.TextColumn(
                 "Party Name",
-                help="Click to add or edit party name directly for this transaction",
+                help="Type to edit party name directly for this transaction",
             ),
         },
     )
@@ -945,53 +1102,43 @@ def app() -> None:
         updated_count = 0
         for idx, new_val in changes_to_apply.items():
             if idx in results.index:
-                row = results.loc[idx]
-                match_key = row["Party match key"]
-                txn_key = row["Transaction key"]
-                if new_val:
-                    if apply_reusable:
-                        assignments["party_mappings"][match_key] = new_val
-                        assignments["transaction_overrides"].pop(txn_key, None)
-                        if sb_client:
-                            db.save_party_mapping(sb_client, match_key, new_val)
-                    else:
-                        assignments["transaction_overrides"][txn_key] = new_val
-                        if sb_client:
-                            db.save_transaction_override(sb_client, txn_key, new_val)
-                else:
-                    assignments["party_mappings"].pop(match_key, None)
-                    assignments["transaction_overrides"].pop(txn_key, None)
-                    if sb_client:
-                        db.delete_party_mapping(sb_client, match_key)
+                fp = results.loc[idx, "fingerprint"]
+                assign_party_name_to_transactions([fp], new_val, combined, sb_client)
                 updated_count += 1
 
-        save_assignments(assignments)
-        if "cached_transactions" in st.session_state:
-            st.session_state["cached_transactions"] = apply_assignments(st.session_state["cached_transactions"], assignments)
+        st.session_state["cached_transactions"] = combined
         st.session_state.editor_version += 1
         st.toast(f"Saved party name for {updated_count} transaction{'s' if updated_count > 1 else ''}.", icon="✅")
         st.rerun()
 
-    with st.expander("Manage saved party mappings"):
-        has_mappings = bool(assignments["party_mappings"] or assignments["transaction_overrides"])
-        if not has_mappings:
-            st.info("No party names have been assigned yet.")
-        else:
-            if assignments["party_mappings"]:
-                st.write("**Sender / Receiver Mappings (Reusable)**")
-                mappings_df = pd.DataFrame([
-                    {"Narration Key": k, "Assigned Party Name": v}
-                    for k, v in assignments["party_mappings"].items()
-                ])
-                st.dataframe(mappings_df, use_container_width=True, hide_index=True)
-            if assignments["transaction_overrides"]:
-                st.write(f"**Single-transaction overrides:** {len(assignments['transaction_overrides'])} saved.")
-            if st.button("Clear all saved party mappings"):
-                save_assignments(empty_assignments())
-                if sb_client:
-                    db.clear_all_party_mappings(sb_client)
-                st.toast("Cleared all party mappings.", icon="🗑️")
-                st.rerun()
+    with st.expander(f"📁 Stored Party Names ({len(stored_party_names)})"):
+        st.markdown("**Directory of stored party names used for auto-completion suggestions.**")
+        col_new_p, col_add_btn = st.columns([4, 1.2], vertical_alignment="bottom")
+        with col_new_p:
+            new_party_to_add = st.text_input(
+                "Add a new party name to suggestions list",
+                placeholder="e.g. SRI RAMA MEDICALS",
+                key="add_party_input",
+            )
+        with col_add_btn:
+            if st.button("➕ Add Name", use_container_width=True, key="add_party_btn"):
+                clean_new = clean_text(new_party_to_add).strip()
+                if clean_new:
+                    if clean_new not in stored_party_names:
+                        stored_party_names.append(clean_new)
+                        save_stored_party_names(stored_party_names, sb_client)
+                        st.toast(f"Added '{clean_new}' to stored party names.", icon="✅")
+                        st.rerun()
+                    else:
+                        st.info(f"'{clean_new}' is already in stored party names.")
+
+        if stored_party_names:
+            counts = combined["Party Name"].value_counts().to_dict() if not combined.empty and "Party Name" in combined.columns else {}
+            p_data = [
+                {"Party Name": p, "Assigned Transactions": counts.get(p, 0)}
+                for p in stored_party_names
+            ]
+            st.dataframe(pd.DataFrame(p_data), use_container_width=True, hide_index=True)
 
     export = export_excel(results)
     st.download_button(

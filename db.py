@@ -113,6 +113,108 @@ def get_supabase_client() -> Client | None:
         return None
 
 
+def fetch_party_names(client: Client) -> list[str]:
+    """Fetch all distinct stored party names from Supabase for auto-completion."""
+    names: set[str] = set()
+    # 1. Try from party_names table if exists
+    try:
+        res = client.table("party_names").select("name").execute()
+        for item in res.data:
+            val = clean_str(item.get("name"))
+            if val:
+                names.add(val)
+    except Exception:
+        pass
+
+    # 2. Try from party_mappings table (existing schema store)
+    try:
+        res = client.table("party_mappings").select("party_name").execute()
+        for item in res.data:
+            val = clean_str(item.get("party_name"))
+            if val:
+                names.add(val)
+    except Exception:
+        pass
+
+    # 3. From transactions table where party_name != ''
+    try:
+        res = client.table("transactions").select("party_name").neq("party_name", "").limit(5000).execute()
+        for item in res.data:
+            val = clean_str(item.get("party_name"))
+            if val:
+                names.add(val)
+    except Exception:
+        pass
+
+    return sorted(names)
+
+
+def save_party_name(client: Client, party_name: str) -> bool:
+    """Save a party name to Supabase suggestions store."""
+    party_name = clean_str(party_name)
+    if not party_name:
+        return False
+    saved = False
+    try:
+        client.table("party_names").upsert({"name": party_name}).execute()
+        saved = True
+    except Exception:
+        pass
+    try:
+        client.table("party_mappings").upsert({
+            "match_key": party_name.lower(),
+            "party_name": party_name,
+        }).execute()
+        saved = True
+    except Exception:
+        pass
+    return saved
+
+
+def delete_party_name(client: Client, party_name: str) -> bool:
+    """Remove a party name from Supabase suggestions store."""
+    party_name = clean_str(party_name)
+    if not party_name:
+        return False
+    try:
+        client.table("party_names").delete().eq("name", party_name).execute()
+    except Exception:
+        pass
+    try:
+        client.table("party_mappings").delete().eq("match_key", party_name.lower()).execute()
+    except Exception:
+        pass
+    return True
+
+
+def update_transaction_party(client: Client, fingerprint: str, party_name: str) -> bool:
+    """Update party_name for a single transaction in Supabase."""
+    try:
+        client.table("transactions").update({
+            "party_name": clean_str(party_name),
+        }).eq("fingerprint", fingerprint).execute()
+        return True
+    except Exception:
+        return False
+
+
+def update_transactions_party_bulk(client: Client, fingerprints: list[str], party_name: str) -> bool:
+    """Update party_name for multiple transactions in Supabase in chunks."""
+    if not fingerprints:
+        return True
+    try:
+        clean_name = clean_str(party_name)
+        chunk_size = 100
+        for i in range(0, len(fingerprints), chunk_size):
+            chunk = fingerprints[i:i + chunk_size]
+            client.table("transactions").update({
+                "party_name": clean_name,
+            }).in_("fingerprint", chunk).execute()
+        return True
+    except Exception:
+        return False
+
+
 def fetch_party_mappings(client: Client) -> dict[str, str]:
     """Fetch all reusable party mappings from Supabase."""
     try:
@@ -163,13 +265,7 @@ def clear_all_party_mappings(client: Client) -> bool:
 
 def save_transaction_override(client: Client, fingerprint: str, party_name: str) -> bool:
     """Save an override for a single transaction in Supabase."""
-    try:
-        client.table("transactions").update({
-            "party_name": party_name,
-        }).eq("fingerprint", fingerprint).execute()
-        return True
-    except Exception:
-        return False
+    return update_transaction_party(client, fingerprint, party_name)
 
 
 def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int, int]:
