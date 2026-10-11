@@ -685,6 +685,185 @@ def inject_keyboard_shortcuts() -> None:
     )
 
 
+def inject_party_autocomplete(stored_party_names: list[str]) -> None:
+    """Inject in-cell auto-completion for Party Name in the transaction table."""
+    if components is None or not stored_party_names:
+        return
+
+    clean_names = [clean_text(n) for n in stored_party_names if clean_text(n)]
+    names_json = json.dumps(clean_names)
+    html_code = f"""
+    <script>
+    (function() {{
+        try {{
+            const parentDoc = window.parent.document;
+            if (!parentDoc) return;
+
+            const partyList = {names_json};
+
+            let popup = parentDoc.getElementById('sh-party-ac-popup');
+            if (!popup) {{
+                popup = parentDoc.createElement('div');
+                popup.id = 'sh-party-ac-popup';
+                popup.style.position = 'fixed';
+                popup.style.display = 'none';
+                popup.style.zIndex = '9999999';
+                popup.style.background = '#1e1e2e';
+                popup.style.border = '1px solid #45475a';
+                popup.style.borderRadius = '8px';
+                popup.style.boxShadow = '0 10px 25px rgba(0,0,0,0.6)';
+                popup.style.maxHeight = '220px';
+                popup.style.overflowY = 'auto';
+                popup.style.fontFamily = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+                popup.style.fontSize = '13px';
+                parentDoc.body.appendChild(popup);
+            }}
+
+            let activeInput = null;
+            let selectedIdx = -1;
+            let currentMatches = [];
+
+            function hidePopup() {{
+                if (popup) popup.style.display = 'none';
+                selectedIdx = -1;
+                currentMatches = [];
+            }}
+
+            function applyValue(input, val) {{
+                if (!input) return;
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+                    || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                if (setter) {{
+                    setter.call(input, val);
+                }} else {{
+                    input.value = val;
+                }}
+                input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                hidePopup();
+                input.focus();
+            }}
+
+            function updateHighlight(newIdx) {{
+                selectedIdx = newIdx;
+                const items = popup.querySelectorAll('.sh-ac-item');
+                items.forEach((it, i) => {{
+                    if (i === selectedIdx) {{
+                        it.style.background = '#313244';
+                        it.style.color = '#89b4fa';
+                    }} else {{
+                        it.style.background = 'transparent';
+                        it.style.color = '#cdd6f4';
+                    }}
+                }});
+            }}
+
+            function renderSuggestions(input, matches) {{
+                currentMatches = matches;
+                selectedIdx = -1;
+                popup.innerHTML = '';
+                if (!matches.length) {{
+                    hidePopup();
+                    return;
+                }}
+
+                const rect = input.getBoundingClientRect();
+                popup.style.top = (rect.bottom + 4) + 'px';
+                popup.style.left = Math.max(10, rect.left) + 'px';
+                popup.style.minWidth = Math.max(rect.width, 240) + 'px';
+                popup.style.maxWidth = '420px';
+                popup.style.display = 'block';
+
+                matches.forEach((name, idx) => {{
+                    const item = parentDoc.createElement('div');
+                    item.className = 'sh-ac-item';
+                    item.style.padding = '8px 12px';
+                    item.style.cursor = 'pointer';
+                    item.style.color = '#cdd6f4';
+                    item.style.borderBottom = idx < matches.length - 1 ? '1px solid #313244' : 'none';
+                    item.style.transition = 'background 0.1s ease';
+                    item.innerHTML = `<span style="color:#89b4fa;margin-right:6px;">🏷️</span><b>${{name}}</b>`;
+
+                    item.addEventListener('mouseenter', () => {{
+                        updateHighlight(idx);
+                    }});
+
+                    item.addEventListener('mousedown', (e) => {{
+                        e.preventDefault();
+                        e.stopPropagation();
+                        applyValue(input, name);
+                    }});
+
+                    popup.appendChild(item);
+                }});
+            }}
+
+            function onInputChange(e) {{
+                const input = e.target;
+                if (!input || (!input.classList.contains('gdg-input') && input.tagName !== 'TEXTAREA')) return;
+                activeInput = input;
+
+                const q = (input.value || '').trim().toLowerCase();
+                if (q.length < 1) {{
+                    hidePopup();
+                    return;
+                }}
+
+                const matches = partyList.filter(p => p.toLowerCase().includes(q)).slice(0, 8);
+                renderSuggestions(input, matches);
+            }}
+
+            function onKeyDown(e) {{
+                if (!popup || popup.style.display !== 'block' || !currentMatches.length) return;
+
+                if (e.key === 'ArrowDown') {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const next = (selectedIdx + 1) % currentMatches.length;
+                    updateHighlight(next);
+                }} else if (e.key === 'ArrowUp') {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const prev = (selectedIdx - 1 + currentMatches.length) % currentMatches.length;
+                    updateHighlight(prev);
+                }} else if ((e.key === 'Enter' || e.key === 'Tab') && selectedIdx >= 0) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    applyValue(activeInput, currentMatches[selectedIdx]);
+                }} else if (e.key === 'Escape') {{
+                    hidePopup();
+                }}
+            }}
+
+            if (parentDoc._shPartyAcInputHandler) {{
+                parentDoc.removeEventListener('input', parentDoc._shPartyAcInputHandler, true);
+                parentDoc.removeEventListener('keydown', parentDoc._shPartyAcKeyHandler, true);
+                parentDoc.removeEventListener('click', parentDoc._shPartyAcClickHandler, true);
+            }}
+
+            parentDoc._shPartyAcInputHandler = onInputChange;
+            parentDoc._shPartyAcKeyHandler = onKeyDown;
+            parentDoc._shPartyAcClickHandler = (e) => {{
+                if (popup && popup.style.display === 'block') {{
+                    if (!popup.contains(e.target) && e.target !== activeInput) {{
+                        hidePopup();
+                    }}
+                }}
+            }};
+
+            parentDoc.addEventListener('input', parentDoc._shPartyAcInputHandler, true);
+            parentDoc.addEventListener('keydown', parentDoc._shPartyAcKeyHandler, true);
+            parentDoc.addEventListener('click', parentDoc._shPartyAcClickHandler, true);
+
+        }} catch(err) {{
+            console.error('StatementHub Party Autocomplete Error:', err);
+        }}
+    }})();
+    </script>
+    """
+    components.html(html_code, height=0, width=0)
+
+
 def render_single_copy_btn(text: str, label: str = "📋 Copy UTR") -> None:
     """Render a 1-click copy button beside the search box or values."""
     if not text or components is None:
@@ -982,28 +1161,10 @@ def app() -> None:
         st.warning(f"Duplicate identifier detected in these results: {', '.join(duplicated[:8])}" + (" …" if len(duplicated) > 8 else ""))
     stored_party_names = load_stored_party_names(sb_client, combined)
 
-    col_res_header, col_add_p = st.columns([5, 1], vertical_alignment="center")
-    with col_res_header:
-        st.subheader(f"Results ({len(results):,})")
-    with col_add_p:
-        with st.popover("➕ New Party Name"):
-            new_party_input = st.text_input(
-                "New Party Name",
-                placeholder="e.g. SRI RAMA MEDICALS",
-                key="popover_party_input",
-            )
-            if st.button("Save Name", type="primary", use_container_width=True, key="popover_party_btn"):
-                cleaned = clean_text(new_party_input).strip()
-                if cleaned:
-                    if cleaned not in stored_party_names:
-                        stored_party_names.append(cleaned)
-                        save_stored_party_names(stored_party_names, sb_client)
-                        st.toast(f"Added '{cleaned}' to party suggestions!", icon="✅")
-                        st.rerun()
-                    else:
-                        st.info("Party name is already stored.")
+    st.subheader(f"Results ({len(results):,})")
+    st.caption("💡 Click on any transaction's **Party Name** cell to enter party name (matching saved names will appear while typing).")
 
-    st.caption("💡 Click on any row's **Party Name** cell to select or start typing for instant auto-completion.")
+    inject_party_autocomplete(stored_party_names)
 
     results = results.reset_index(drop=True)
 
@@ -1017,13 +1178,6 @@ def app() -> None:
         "UTR / Reference", "Balance", "Duplicate UTR",
     ]
 
-    # Combine stored party names and any names present in results for the in-cell selectbox dropdown
-    unique_existing_in_results = [
-        clean_text(p) for p in results["Party Name"].dropna().unique().tolist() if clean_text(p)
-    ]
-    all_options_set = set(stored_party_names) | set(unique_existing_in_results)
-    party_options = [""] + sorted(all_options_set)
-
     edited_results = st.data_editor(
         results[display_columns],
         disabled=[col for col in display_columns if col != "Party Name"],
@@ -1033,11 +1187,9 @@ def app() -> None:
         column_config={
             "Amount": st.column_config.NumberColumn(format="₹ %0.2f"),
             "Balance": st.column_config.NumberColumn(format="₹ %0.2f"),
-            "Party Name": st.column_config.SelectboxColumn(
+            "Party Name": st.column_config.TextColumn(
                 "Party Name",
-                help="Click or double-click to select / start typing party name for auto-completion",
-                options=party_options,
-                required=False,
+                help="Click or double-click to type party name (matching saved names will appear while typing)",
             ),
         },
     )
