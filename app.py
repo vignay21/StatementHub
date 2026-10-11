@@ -22,9 +22,11 @@ import db
 try:
     import streamlit as st
     import streamlit.components.v1 as components
+    import altair as alt
 except ModuleNotFoundError:  # Enables parser verification before the UI dependency is installed.
     st = None
     components = None
+    alt = None
 
 
 HEADER_ALIASES = {
@@ -1429,9 +1431,85 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
 
     # 1. Visual Inflows vs Outflows Chart
     st.markdown("#### 📊 Inflows vs. Outflows Comparison (Month-by-Month)")
-    chart_data = m_df.sort_values("YearMonth", ascending=True)[["Month", "Received (Credits)", "Sent (Debits)"]].set_index("Month")
-    chart_data.rename(columns={"Received (Credits)": "Received (Inflows)", "Sent (Debits)": "Sent (Outflows)"}, inplace=True)
-    st.bar_chart(chart_data, color=["#10b981", "#ef4444"])
+    chart_df_sorted = m_df.sort_values("YearMonth", ascending=True)
+    plot_rows = []
+    month_order = []
+    for _, r in chart_df_sorted.iterrows():
+        m_name = r["Month"]
+        if m_name not in month_order:
+            month_order.append(m_name)
+        plot_rows.append({
+            "Month": m_name,
+            "Type": "Received (Inflows)",
+            "Amount": float(r["Received (Credits)"]),
+            "Formatted": format_inr(r["Received (Credits)"]),
+        })
+        plot_rows.append({
+            "Month": m_name,
+            "Type": "Sent (Outflows)",
+            "Amount": float(r["Sent (Debits)"]),
+            "Formatted": format_inr(r["Sent (Debits)"]),
+        })
+    plot_df = pd.DataFrame(plot_rows)
+
+    if alt is not None and not plot_df.empty:
+        # Indian numbering system expression for chart axis (e.g. ₹ 80,00,000, ₹ 20,00,000)
+        indian_axis_expr = (
+            "datum.value == 0 ? '₹ 0' : "
+            "(datum.value < 0 ? '-₹ ' : '₹ ') + ("
+            "abs(datum.value) >= 10000000 ? "
+                "floor(abs(datum.value) / 10000000) + ',' + "
+                "slice('00' + floor((abs(datum.value) % 10000000) / 100000), -2) + ',' + "
+                "slice('00' + floor((abs(datum.value) % 100000) / 1000), -2) + ',' + "
+                "slice('000' + (abs(datum.value) % 1000), -3) : "
+            "abs(datum.value) >= 100000 ? "
+                "floor(abs(datum.value) / 100000) + ',' + "
+                "slice('00' + floor((abs(datum.value) % 100000) / 1000), -2) + ',' + "
+                "slice('000' + (abs(datum.value) % 1000), -3) : "
+            "abs(datum.value) >= 1000 ? "
+                "floor(abs(datum.value) / 1000) + ',' + "
+                "slice('000' + (abs(datum.value) % 1000), -3) : "
+            "'' + abs(datum.value)"
+            ")"
+        )
+
+        chart = (
+            alt.Chart(plot_df)
+            .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+            .encode(
+                x=alt.X("Month:N", title=None, sort=month_order, axis=alt.Axis(labelAngle=0, labelFontSize=12)),
+                xOffset=alt.XOffset("Type:N", sort=["Received (Inflows)", "Sent (Outflows)"]),
+                y=alt.Y(
+                    "Amount:Q",
+                    title="Amount (₹)",
+                    axis=alt.Axis(labelExpr=indian_axis_expr, grid=True, titleFontSize=12),
+                ),
+                color=alt.Color(
+                    "Type:N",
+                    scale=alt.Scale(
+                        domain=["Received (Inflows)", "Sent (Outflows)"],
+                        range=["#10b981", "#ef4444"],
+                    ),
+                    legend=alt.Legend(
+                        title=None,
+                        orient="top",
+                        labelFontSize=12,
+                        symbolType="circle",
+                    ),
+                ),
+                tooltip=[
+                    alt.Tooltip("Month:N", title="Month"),
+                    alt.Tooltip("Type:N", title="Category"),
+                    alt.Tooltip("Formatted:N", title="Amount"),
+                ],
+            )
+            .properties(height=360)
+        )
+        st.altair_chart(chart, use_container_width=True)
+    else:
+        chart_data = chart_df_sorted[["Month", "Received (Credits)", "Sent (Debits)"]].set_index("Month")
+        chart_data.rename(columns={"Received (Credits)": "Received (Inflows)", "Sent (Debits)": "Sent (Outflows)"}, inplace=True)
+        st.bar_chart(chart_data, color=["#10b981", "#ef4444"], stack=False)
 
     # 2. Detailed Month-by-Month Table
     st.markdown("#### 📋 Month-by-Month Profit Breakdown")
