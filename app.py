@@ -982,77 +982,28 @@ def app() -> None:
         st.warning(f"Duplicate identifier detected in these results: {', '.join(duplicated[:8])}" + (" …" if len(duplicated) > 8 else ""))
     stored_party_names = load_stored_party_names(sb_client, combined)
 
-    st.subheader(f"Results ({len(results):,})")
-
-    # 1. Quick Assign Party Name with live auto-completion while typing
-    if len(results) == 1:
-        single_row = results.iloc[0]
-        curr_p = clean_text(single_row.get("Party Name", ""))
-        curr_idx = stored_party_names.index(curr_p) if curr_p in stored_party_names else None
-
-        col_p_label, col_p_input, col_p_save, col_p_clr = st.columns([1.5, 4, 1.2, 0.8], vertical_alignment="bottom")
-        with col_p_label:
-            st.markdown("**Party Name:**")
-            if curr_p:
-                st.caption(f"Current: `{curr_p}`")
-            else:
-                st.caption("Not assigned yet")
-        with col_p_input:
-            selected_party = st.selectbox(
-                "Party Name (with live autocomplete)",
-                options=stored_party_names,
-                index=curr_idx,
-                placeholder="Start typing party name for autocomplete suggestions...",
-                accept_new_options=True,
-                key=f"party_autocomplete_{single_row['fingerprint']}",
-                label_visibility="collapsed",
+    col_res_header, col_add_p = st.columns([5, 1], vertical_alignment="center")
+    with col_res_header:
+        st.subheader(f"Results ({len(results):,})")
+    with col_add_p:
+        with st.popover("➕ New Party Name"):
+            new_party_input = st.text_input(
+                "New Party Name",
+                placeholder="e.g. SRI RAMA MEDICALS",
+                key="popover_party_input",
             )
-        with col_p_save:
-            if st.button("💾 Save Party", type="primary", use_container_width=True, key="btn_save_single_party"):
-                if selected_party:
-                    assign_party_name_to_transactions(
-                        [single_row["fingerprint"]],
-                        selected_party,
-                        combined,
-                        sb_client,
-                    )
-                    st.session_state["cached_transactions"] = combined
-                    st.toast(f"Saved party name: {selected_party}", icon="✅")
-                    st.rerun()
-        with col_p_clr:
-            if curr_p and st.button("🗑️", help="Remove party name from this transaction", use_container_width=True, key="btn_clear_single_party"):
-                assign_party_name_to_transactions(
-                    [single_row["fingerprint"]],
-                    "",
-                    combined,
-                    sb_client,
-                )
-                st.session_state["cached_transactions"] = combined
-                st.toast("Party name removed from transaction.", icon="🗑️")
-                st.rerun()
-
-    elif len(results) > 1:
-        with st.expander(f"🏷️ Assign Party Name to all {len(results):,} filtered transactions"):
-            col_bulk_input, col_bulk_btn = st.columns([4, 1.5], vertical_alignment="bottom")
-            with col_bulk_input:
-                bulk_party_val = st.selectbox(
-                    "Select or type party name for filtered results",
-                    options=stored_party_names,
-                    index=None,
-                    placeholder="Start typing party name for autocomplete suggestions...",
-                    accept_new_options=True,
-                    key="party_autocomplete_bulk",
-                )
-            with col_bulk_btn:
-                if st.button(f"💾 Apply to all {len(results):,}", type="primary", use_container_width=True, key="btn_save_bulk_party"):
-                    if bulk_party_val:
-                        fps = results["fingerprint"].tolist()
-                        assign_party_name_to_transactions(fps, bulk_party_val, combined, sb_client)
-                        st.session_state["cached_transactions"] = combined
-                        st.toast(f"Assigned '{bulk_party_val}' to {len(fps)} transactions.", icon="✅")
+            if st.button("Save Name", type="primary", use_container_width=True, key="popover_party_btn"):
+                cleaned = clean_text(new_party_input).strip()
+                if cleaned:
+                    if cleaned not in stored_party_names:
+                        stored_party_names.append(cleaned)
+                        save_stored_party_names(stored_party_names, sb_client)
+                        st.toast(f"Added '{cleaned}' to party suggestions!", icon="✅")
                         st.rerun()
+                    else:
+                        st.info("Party name is already stored.")
 
-    st.caption("💡 You can also edit party names directly in the **Party Name** column in the table below.")
+    st.caption("💡 Click on any row's **Party Name** cell to select or start typing for instant auto-completion.")
 
     results = results.reset_index(drop=True)
 
@@ -1065,6 +1016,14 @@ def app() -> None:
         "Bank", "Date", "Description", "Party Name", "Amount", "Type",
         "UTR / Reference", "Balance", "Duplicate UTR",
     ]
+
+    # Combine stored party names and any names present in results for the in-cell selectbox dropdown
+    unique_existing_in_results = [
+        clean_text(p) for p in results["Party Name"].dropna().unique().tolist() if clean_text(p)
+    ]
+    all_options_set = set(stored_party_names) | set(unique_existing_in_results)
+    party_options = [""] + sorted(all_options_set)
+
     edited_results = st.data_editor(
         results[display_columns],
         disabled=[col for col in display_columns if col != "Party Name"],
@@ -1074,9 +1033,11 @@ def app() -> None:
         column_config={
             "Amount": st.column_config.NumberColumn(format="₹ %0.2f"),
             "Balance": st.column_config.NumberColumn(format="₹ %0.2f"),
-            "Party Name": st.column_config.TextColumn(
+            "Party Name": st.column_config.SelectboxColumn(
                 "Party Name",
-                help="Type to edit party name directly for this transaction",
+                help="Click or double-click to select / start typing party name for auto-completion",
+                options=party_options,
+                required=False,
             ),
         },
     )
