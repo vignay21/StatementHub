@@ -912,6 +912,108 @@ def render_single_copy_btn(text: str, label: str = "📋 Copy UTR") -> None:
     components.html(html_code, height=45)
 
 
+def get_bank_color(bank_name: str) -> str:
+    """Return a subtle tinted background color for the bank."""
+    b = str(bank_name or "").lower().strip()
+    if "canara" in b:
+        # Canara Bank: Warm golden/amber tint
+        return "rgba(245, 158, 11, 0.15)"
+    elif "icici" in b:
+        # ICICI Bank: Warm orange/coral tint
+        return "rgba(249, 115, 22, 0.15)"
+    elif "hdfc" in b:
+        # HDFC Bank: Modern sky/navy blue tint
+        return "rgba(14, 165, 233, 0.15)"
+    elif "sbi" in b or "state bank" in b:
+        # State Bank of India: Emerald green tint
+        return "rgba(34, 197, 94, 0.15)"
+    elif "axis" in b:
+        # Axis Bank: Maroon/rose tint
+        return "rgba(244, 63, 94, 0.15)"
+    elif "kotak" in b:
+        # Kotak Mahindra Bank: Crimson red tint
+        return "rgba(239, 68, 68, 0.15)"
+    elif b:
+        # Other bank: Indigo/purple tint
+        return "rgba(168, 85, 247, 0.13)"
+    return ""
+
+
+def style_table_by_bank(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+    """Apply bank-specific background color to rows in data editor."""
+    try:
+        pd.set_option("styler.render.max_elements", 1_000_000)
+    except Exception:
+        pass
+
+    if df.empty or "Bank" not in df.columns:
+        return df.style
+
+    def bank_styler(d: pd.DataFrame) -> pd.DataFrame:
+        styles = pd.DataFrame("", index=d.index, columns=d.columns)
+        for b_uniq in d["Bank"].dropna().unique():
+            color = get_bank_color(b_uniq)
+            if color:
+                mask = d["Bank"] == b_uniq
+                styles.loc[mask, :] = f"background-color: {color}"
+        return styles
+
+    return df.style.apply(bank_styler, axis=None)
+
+
+def render_bank_color_legend(df: pd.DataFrame) -> None:
+    """Render a visual color legend for banks present in the displayed results."""
+    if df.empty or "Bank" not in df.columns:
+        return
+
+    counts = df["Bank"].value_counts().to_dict()
+    if not counts:
+        return
+
+    bank_meta = {
+        "canara": {"icon": "🟡", "label": "Canara Bank", "bg": "rgba(245, 158, 11, 0.16)", "border": "rgba(245, 158, 11, 0.35)", "color": "#d97706"},
+        "icici": {"icon": "🟠", "label": "ICICI Bank", "bg": "rgba(249, 115, 22, 0.16)", "border": "rgba(249, 115, 22, 0.35)", "color": "#ea580c"},
+        "hdfc": {"icon": "🔵", "label": "HDFC Bank", "bg": "rgba(14, 165, 233, 0.16)", "border": "rgba(14, 165, 233, 0.35)", "color": "#0284c7"},
+        "sbi": {"icon": "🟢", "label": "SBI", "bg": "rgba(34, 197, 94, 0.16)", "border": "rgba(34, 197, 94, 0.35)", "color": "#16a34a"},
+        "state bank": {"icon": "🟢", "label": "State Bank", "bg": "rgba(34, 197, 94, 0.16)", "border": "rgba(34, 197, 94, 0.35)", "color": "#16a34a"},
+        "axis": {"icon": "🟣", "label": "Axis Bank", "bg": "rgba(244, 63, 94, 0.16)", "border": "rgba(244, 63, 94, 0.35)", "color": "#e11d48"},
+        "kotak": {"icon": "🔴", "label": "Kotak Bank", "bg": "rgba(239, 68, 68, 0.16)", "border": "rgba(239, 68, 68, 0.35)", "color": "#dc2626"},
+    }
+
+    badges_html: list[str] = []
+    for bank_name, count in counts.items():
+        b_key = str(bank_name).lower()
+        matched = None
+        for k, meta in bank_meta.items():
+            if k in b_key:
+                matched = meta
+                break
+        if not matched:
+            matched = {
+                "icon": "⚪",
+                "label": bank_name,
+                "bg": "rgba(168, 85, 247, 0.14)",
+                "border": "rgba(168, 85, 247, 0.35)",
+                "color": "#9333ea",
+            }
+
+        badges_html.append(
+            f'<span style="display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:12px; '
+            f'background:{matched["bg"]}; border:1px solid {matched["border"]}; font-size:12px; font-weight:600; '
+            f'letter-spacing:0.2px;">'
+            f'{matched["icon"]} {bank_name} <span style="opacity:0.75; font-weight:normal; margin-left:2px;">({count:,})</span></span>'
+        )
+
+    if badges_html:
+        st.markdown(
+            f'<div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin: 4px 0 10px 0;">'
+            f'<span style="font-size:11.5px; font-weight:600; color:gray; text-transform:uppercase; letter-spacing:0.5px;">Bank Colors:</span>'
+            + " ".join(badges_html)
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+
+
 def render_backup_restore_section(combined: pd.DataFrame, assignments: dict[str, Any], sb_client: Any) -> None:
     with st.expander("💾 Backup & Restore Center"):
         st.markdown("**Create an offline backup or restore your database & stored party names.**")
@@ -1164,6 +1266,8 @@ def app() -> None:
     st.subheader(f"Results ({len(results):,})")
     st.caption("💡 Click on any transaction's **Party Name** cell to enter party name (matching saved names will appear while typing).")
 
+    render_bank_color_legend(results)
+
     inject_party_autocomplete(stored_party_names)
 
     results = results.reset_index(drop=True)
@@ -1178,13 +1282,16 @@ def app() -> None:
         "UTR / Reference", "Balance", "Duplicate UTR",
     ]
 
+    styled_results = style_table_by_bank(results[display_columns])
+
     edited_results = st.data_editor(
-        results[display_columns],
+        styled_results,
         disabled=[col for col in display_columns if col != "Party Name"],
         use_container_width=True,
         hide_index=True,
         key=editor_key,
         column_config={
+            "Bank": st.column_config.TextColumn("Bank", help="Transaction rows are color-coded by Bank"),
             "Amount": st.column_config.NumberColumn(format="₹ %0.2f"),
             "Balance": st.column_config.NumberColumn(format="₹ %0.2f"),
             "Party Name": st.column_config.TextColumn(
