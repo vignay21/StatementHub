@@ -74,15 +74,15 @@ The table displays Bank, Date, Description, **Party Name**, Amount, Type, UTR / 
 
 ## Assign business or party names
 
-You can add or update business and party names directly in the table:
+You can add or update business and party names directly in the table row:
 
-- Click into the **Party Name** column right beside any transaction description to type or edit the party name.
-- **Apply to all matching transactions** (turned on by default above the results table) saves a reusable sender/receiver mapping so all matching past and future transactions are automatically named.
-- Turn off **Apply to all matching transactions** if you want the name to apply only as a single-transaction override.
-- Clearing the party name text in the cell removes the assigned name.
-- Open **Manage saved party mappings** below the table to view, inspect, or clear all saved mappings.
+- Double-click the **Party Name** cell for any transaction.
+- **Instant Auto-Completion**: As you start typing (e.g. `PAV`), matching saved party names (e.g. `PAVANI M/S VENKATAPUR`) appear right below the cell. Select with mouse or press **Enter** / **Tab**.
+- **Add New Parties on the Fly**: If a party name is not yet registered, simply type it into the cell and press **Enter**. It will save to that transaction and automatically be added to your saved party names list for future auto-completion.
+- **Stored Registry**: Open **Stored Party Names** below the table to see all registered party names and transaction counts.
+- Clearing the text in the cell removes the assigned party name from that transaction.
 
-The original statement details are never modified. Assigned party names are persisted locally in `~/.statementhub/party_assignments.json`, and the Excel download includes the assigned party name alongside transaction details.
+Assigned party names are persisted in Supabase and locally in `~/.statementhub/stored_parties.json`. Excel downloads include the assigned party names.
 
 ## Duplicate identifiers
 
