@@ -916,23 +916,23 @@ def get_bank_color(bank_name: str) -> str:
     """Return a subtle tinted background color for the bank."""
     b = str(bank_name or "").lower().strip()
     if "canara" in b:
-        # Canara Bank: Warm golden/amber tint
-        return "rgba(245, 158, 11, 0.15)"
+        # Canara Bank: Crisp emerald green tint (distinct from ICICI orange & HDFC blue)
+        return "rgba(16, 185, 129, 0.16)"
     elif "icici" in b:
         # ICICI Bank: Warm orange/coral tint
-        return "rgba(249, 115, 22, 0.15)"
+        return "rgba(249, 115, 22, 0.16)"
     elif "hdfc" in b:
         # HDFC Bank: Modern sky/navy blue tint
-        return "rgba(14, 165, 233, 0.15)"
+        return "rgba(14, 165, 233, 0.16)"
     elif "sbi" in b or "state bank" in b:
-        # State Bank of India: Emerald green tint
-        return "rgba(34, 197, 94, 0.15)"
+        # State Bank of India: Deep teal tint
+        return "rgba(13, 148, 136, 0.16)"
     elif "axis" in b:
         # Axis Bank: Maroon/rose tint
-        return "rgba(244, 63, 94, 0.15)"
+        return "rgba(244, 63, 94, 0.16)"
     elif "kotak" in b:
         # Kotak Mahindra Bank: Crimson red tint
-        return "rgba(239, 68, 68, 0.15)"
+        return "rgba(239, 68, 68, 0.16)"
     elif b:
         # Other bank: Indigo/purple tint
         return "rgba(168, 85, 247, 0.13)"
@@ -971,11 +971,11 @@ def render_bank_color_legend(df: pd.DataFrame) -> None:
         return
 
     bank_meta = {
-        "canara": {"icon": "🟡", "label": "Canara Bank", "bg": "rgba(245, 158, 11, 0.16)", "border": "rgba(245, 158, 11, 0.35)", "color": "#d97706"},
+        "canara": {"icon": "🟢", "label": "Canara Bank", "bg": "rgba(16, 185, 129, 0.16)", "border": "rgba(16, 185, 129, 0.35)", "color": "#059669"},
         "icici": {"icon": "🟠", "label": "ICICI Bank", "bg": "rgba(249, 115, 22, 0.16)", "border": "rgba(249, 115, 22, 0.35)", "color": "#ea580c"},
         "hdfc": {"icon": "🔵", "label": "HDFC Bank", "bg": "rgba(14, 165, 233, 0.16)", "border": "rgba(14, 165, 233, 0.35)", "color": "#0284c7"},
-        "sbi": {"icon": "🟢", "label": "SBI", "bg": "rgba(34, 197, 94, 0.16)", "border": "rgba(34, 197, 94, 0.35)", "color": "#16a34a"},
-        "state bank": {"icon": "🟢", "label": "State Bank", "bg": "rgba(34, 197, 94, 0.16)", "border": "rgba(34, 197, 94, 0.35)", "color": "#16a34a"},
+        "sbi": {"icon": "🩵", "label": "SBI", "bg": "rgba(13, 148, 136, 0.16)", "border": "rgba(13, 148, 136, 0.35)", "color": "#0f766e"},
+        "state bank": {"icon": "🩵", "label": "State Bank", "bg": "rgba(13, 148, 136, 0.16)", "border": "rgba(13, 148, 136, 0.35)", "color": "#0f766e"},
         "axis": {"icon": "🟣", "label": "Axis Bank", "bg": "rgba(244, 63, 94, 0.16)", "border": "rgba(244, 63, 94, 0.35)", "color": "#e11d48"},
         "kotak": {"icon": "🔴", "label": "Kotak Bank", "bg": "rgba(239, 68, 68, 0.16)", "border": "rgba(239, 68, 68, 0.35)", "color": "#dc2626"},
     }
