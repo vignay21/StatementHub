@@ -59,6 +59,32 @@ def clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
+def format_inr(val: Any, prefix: str = "₹ ") -> str:
+    """Format a number into Indian currency format (e.g. ₹ 62,41,515.00)."""
+    if val is None or pd.isna(val):
+        return f"{prefix}0.00"
+    try:
+        num = float(val)
+    except (ValueError, TypeError):
+        return f"{prefix}0.00"
+
+    is_neg = num < 0
+    num = abs(num)
+    s = f"{num:.2f}"
+    int_part, dec_part = s.split(".")
+
+    if len(int_part) <= 3:
+        formatted_int = int_part
+    else:
+        last_three = int_part[-3:]
+        remaining = int_part[:-3]
+        formatted_remaining = re.sub(r"(\d)(?=(\d{2})+(?!\d))", r"\1,", remaining)
+        formatted_int = f"{formatted_remaining},{last_three}"
+
+    sign = "-" if is_neg else ""
+    return f"{sign}{prefix}{formatted_int}.{dec_part}"
+
+
 def header_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", clean_text(value).lower()).strip()
 
@@ -1180,12 +1206,12 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
     # Top KPI Cards
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     with kpi1:
-        st.metric("Total Received (Inflows)", f"₹ {total_rec:,.2f}", help="Total of all Credits into your account")
+        st.metric("Total Received (Inflows)", format_inr(total_rec), help="Total of all Credits into your account")
     with kpi2:
-        st.metric("Total Sent (Outflows)", f"₹ {total_sent:,.2f}", help="Total of all Debits / Payments out of your account")
+        st.metric("Total Sent (Outflows)", format_inr(total_sent), help="Total of all Debits / Payments out of your account")
     with kpi3:
         status_label = "🟢 Net Profit" if net_profit >= 0 else "🔴 Net Deficit"
-        st.metric("Net Surplus / Profit", f"₹ {net_profit:,.2f}", delta=status_label, delta_color="normal" if net_profit >= 0 else "inverse")
+        st.metric("Net Surplus / Profit", format_inr(net_profit), delta=status_label, delta_color="normal" if net_profit >= 0 else "inverse")
     with kpi4:
         st.metric("Profit Margin", f"{margin_pct:+.1f}%", help="Percentage of received money retained as net profit")
 
@@ -1214,16 +1240,16 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
 
     # 2. Detailed Month-by-Month Table
     st.markdown("#### 📋 Month-by-Month Profit Breakdown")
-    display_m_df = m_df[["Month", "Received (Credits)", "Sent (Debits)", "Net Profit / Loss", "Status", "Margin %", "Transactions"]]
+    display_m_df = m_df[["Month", "Received (Credits)", "Sent (Debits)", "Net Profit / Loss", "Status", "Margin %", "Transactions"]].copy()
+    display_m_df["Received (Credits)"] = display_m_df["Received (Credits)"].apply(format_inr)
+    display_m_df["Sent (Debits)"] = display_m_df["Sent (Debits)"].apply(format_inr)
+    display_m_df["Net Profit / Loss"] = display_m_df["Net Profit / Loss"].apply(format_inr)
 
     st.dataframe(
         display_m_df,
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Received (Credits)": st.column_config.NumberColumn(format="₹ %0.2f"),
-            "Sent (Debits)": st.column_config.NumberColumn(format="₹ %0.2f"),
-            "Net Profit / Loss": st.column_config.NumberColumn(format="₹ %0.2f"),
             "Margin %": st.column_config.NumberColumn(format="%0.1f %%"),
         },
     )
@@ -1240,16 +1266,14 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
         b_grp.rename(columns={"Credit": "Received (Credits)", "Debit": "Sent (Debits)"}, inplace=True)
         b_display = b_grp.sort_values(["YearMonth", "Bank"], ascending=[False, True])[
             ["Month", "Bank", "Received (Credits)", "Sent (Debits)", "Net Profit / Loss", "Status"]
-        ]
+        ].copy()
+        b_display["Received (Credits)"] = b_display["Received (Credits)"].apply(format_inr)
+        b_display["Sent (Debits)"] = b_display["Sent (Debits)"].apply(format_inr)
+        b_display["Net Profit / Loss"] = b_display["Net Profit / Loss"].apply(format_inr)
         st.dataframe(
             b_display,
             use_container_width=True,
             hide_index=True,
-            column_config={
-                "Received (Credits)": st.column_config.NumberColumn(format="₹ %0.2f"),
-                "Sent (Debits)": st.column_config.NumberColumn(format="₹ %0.2f"),
-                "Net Profit / Loss": st.column_config.NumberColumn(format="₹ %0.2f"),
-            },
         )
 
     # 4. Download Report
@@ -1413,12 +1437,12 @@ def app() -> None:
 
         q_col1, q_col2, q_col3 = st.columns(3)
         with q_col1:
-            st.metric("Total Received (Inflows)", f"₹ {rec_sum:,.2f}", help="Total money received for selected bank & period")
+            st.metric("Total Received (Inflows)", format_inr(rec_sum), help="Total money received for selected bank & period")
         with q_col2:
-            st.metric("Total Sent (Outflows)", f"₹ {sent_sum:,.2f}", help="Total money paid out for selected bank & period")
+            st.metric("Total Sent (Outflows)", format_inr(sent_sum), help="Total money paid out for selected bank & period")
         with q_col3:
             status_label = "🟢 In Profit" if net_sum >= 0 else "🔴 In Deficit"
-            st.metric("Net Surplus / Profit", f"₹ {net_sum:,.2f}", delta=status_label, delta_color="normal" if net_sum >= 0 else "inverse")
+            st.metric("Net Surplus / Profit", format_inr(net_sum), delta=status_label, delta_color="normal" if net_sum >= 0 else "inverse")
 
         search_modes = {"UTR / Reference": "utr", "Date": "date", "Amount": "amount"}
         selected_mode = st.radio("Search by", list(search_modes.keys()), horizontal=True)
