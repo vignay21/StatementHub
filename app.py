@@ -1081,9 +1081,186 @@ def render_backup_restore_section(combined: pd.DataFrame, assignments: dict[str,
                                 st.session_state["cached_transactions"] = pd.DataFrame(restored_txns)
 
                         st.toast("Database and stored party names restored successfully!", icon="✅")
-                        st.rerun()
                 except Exception as exc:
                     st.error(f"Invalid backup file format: {exc}")
+
+
+def export_monthly_report(transactions: pd.DataFrame) -> bytes:
+    """Generate a multi-sheet Excel workbook with monthly profit & bank breakdown."""
+    if transactions.empty or "Date" not in transactions.columns or "Amount" not in transactions.columns:
+        return b""
+
+    dates = pd.to_datetime(transactions["Date"], format="%d-%m-%Y", errors="coerce")
+    if dates.isna().any():
+        fallback = pd.to_datetime(transactions.loc[dates.isna(), "Date"], dayfirst=True, errors="coerce")
+        dates.fillna(fallback, inplace=True)
+
+    valid = transactions[~dates.isna()].copy()
+    if valid.empty:
+        return b""
+
+    valid["DateTime"] = dates[~dates.isna()]
+    valid["YearMonth"] = valid["DateTime"].dt.strftime("%Y-%m")
+    valid["Month"] = valid["DateTime"].dt.strftime("%B %Y")
+
+    # Monthly Summary
+    m_grp = valid.groupby(["YearMonth", "Month", "Type"])["Amount"].sum().unstack(fill_value=0.0)
+    if "Credit" not in m_grp:
+        m_grp["Credit"] = 0.0
+    if "Debit" not in m_grp:
+        m_grp["Debit"] = 0.0
+    counts = valid.groupby(["YearMonth", "Month"]).size().to_dict()
+
+    m_df = m_grp.reset_index().sort_values("YearMonth", ascending=False)
+    m_df["Net Profit / Surplus"] = m_df["Credit"] - m_df["Debit"]
+    m_df["Status"] = m_df["Net Profit / Surplus"].apply(lambda x: "Profit" if x >= 0 else "Deficit")
+    m_df["Margin %"] = m_df.apply(
+        lambda r: round((r["Net Profit / Surplus"] / r["Credit"] * 100), 2) if r["Credit"] > 0 else 0.0, axis=1
+    )
+    m_df["Transactions"] = m_df.apply(lambda r: counts.get((r["YearMonth"], r["Month"]), 0), axis=1)
+    m_df.rename(columns={"Credit": "Received (Credits)", "Debit": "Sent (Debits)"}, inplace=True)
+    m_export = m_df.drop(columns=["YearMonth"], errors="ignore")
+
+    # Bank-wise Breakdown
+    b_grp = valid.groupby(["YearMonth", "Month", "Bank", "Type"])["Amount"].sum().unstack(fill_value=0.0).reset_index()
+    if "Credit" not in b_grp:
+        b_grp["Credit"] = 0.0
+    if "Debit" not in b_grp:
+        b_grp["Debit"] = 0.0
+    b_grp["Net Profit / Surplus"] = b_grp["Credit"] - b_grp["Debit"]
+    b_grp["Status"] = b_grp["Net Profit / Surplus"].apply(lambda x: "Profit" if x >= 0 else "Deficit")
+    b_grp.rename(columns={"Credit": "Received (Credits)", "Debit": "Sent (Debits)"}, inplace=True)
+    b_export = b_grp.sort_values(["YearMonth", "Bank"], ascending=[False, True]).drop(columns=["YearMonth"], errors="ignore")
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        m_export.to_excel(writer, sheet_name="Monthly Profit Summary", index=False)
+        b_export.to_excel(writer, sheet_name="Bank Breakdown", index=False)
+    return output.getvalue()
+
+
+def render_monthly_profit_section(combined: pd.DataFrame) -> None:
+    """Render interactive Monthly Profit & Cash Flow analytics dashboard."""
+    st.subheader("💰 Monthly Profit & Cash Flow Dashboard")
+    st.caption("Track how much money you received, how much you spent, and your net monthly profit/deficit across bank accounts.")
+
+    if combined.empty:
+        st.info("No transaction data available to calculate monthly profit.")
+        return
+
+    # Filter by bank inside the profit analytics tab
+    all_banks = ["All Banks"] + sorted([b for b in combined["Bank"].dropna().unique().tolist() if b])
+    p_col_bank, _ = st.columns([2, 3])
+    with p_col_bank:
+        selected_bank = st.selectbox("Filter Analytics by Bank", options=all_banks, index=0, key="analytics_bank_filter")
+
+    df = combined.copy()
+    if selected_bank != "All Banks":
+        df = df[df["Bank"] == selected_bank].copy()
+
+    dates = pd.to_datetime(df["Date"], format="%d-%m-%Y", errors="coerce")
+    if dates.isna().any():
+        fallback = pd.to_datetime(df.loc[dates.isna(), "Date"], dayfirst=True, errors="coerce")
+        dates.fillna(fallback, inplace=True)
+
+    valid = df[~dates.isna()].copy()
+    if valid.empty:
+        st.warning("No transactions with valid dates found for this selection.")
+        return
+
+    valid["DateTime"] = dates[~dates.isna()]
+    valid["YearMonth"] = valid["DateTime"].dt.strftime("%Y-%m")
+    valid["Month"] = valid["DateTime"].dt.strftime("%B %Y")
+
+    total_rec = float(valid.loc[valid["Type"] == "Credit", "Amount"].sum())
+    total_sent = float(valid.loc[valid["Type"] == "Debit", "Amount"].sum())
+    net_profit = total_rec - total_sent
+    margin_pct = (net_profit / total_rec * 100) if total_rec > 0 else 0.0
+
+    # Top KPI Cards
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    with kpi1:
+        st.metric("Total Received (Inflows)", f"₹ {total_rec:,.2f}", help="Total of all Credits into your account")
+    with kpi2:
+        st.metric("Total Sent (Outflows)", f"₹ {total_sent:,.2f}", help="Total of all Debits / Payments out of your account")
+    with kpi3:
+        status_label = "🟢 Net Profit" if net_profit >= 0 else "🔴 Net Deficit"
+        st.metric("Net Surplus / Profit", f"₹ {net_profit:,.2f}", delta=status_label, delta_color="normal" if net_profit >= 0 else "inverse")
+    with kpi4:
+        st.metric("Profit Margin", f"{margin_pct:+.1f}%", help="Percentage of received money retained as net profit")
+
+    st.divider()
+
+    # Monthly Grouping
+    m_grp = valid.groupby(["YearMonth", "Month", "Type"])["Amount"].sum().unstack(fill_value=0.0)
+    if "Credit" not in m_grp:
+        m_grp["Credit"] = 0.0
+    if "Debit" not in m_grp:
+        m_grp["Debit"] = 0.0
+    counts = valid.groupby(["YearMonth", "Month"]).size().to_dict()
+
+    m_df = m_grp.reset_index().sort_values("YearMonth", ascending=False)
+    m_df["Net Profit / Loss"] = m_df["Credit"] - m_df["Debit"]
+    m_df["Status"] = m_df["Net Profit / Loss"].apply(lambda x: "🟢 Profit" if x >= 0 else "🔴 Deficit")
+    m_df["Margin %"] = m_df.apply(lambda r: round((r["Net Profit / Loss"] / r["Credit"] * 100), 1) if r["Credit"] > 0 else 0.0, axis=1)
+    m_df["Transactions"] = m_df.apply(lambda r: counts.get((r["YearMonth"], r["Month"]), 0), axis=1)
+    m_df.rename(columns={"Credit": "Received (Credits)", "Debit": "Sent (Debits)"}, inplace=True)
+
+    # 1. Visual Inflows vs Outflows Chart
+    st.markdown("#### 📊 Inflows vs. Outflows Comparison (Month-by-Month)")
+    chart_data = m_df.sort_values("YearMonth", ascending=True)[["Month", "Received (Credits)", "Sent (Debits)"]].set_index("Month")
+    chart_data.rename(columns={"Received (Credits)": "Received (Inflows)", "Sent (Debits)": "Sent (Outflows)"}, inplace=True)
+    st.bar_chart(chart_data, color=["#10b981", "#ef4444"])
+
+    # 2. Detailed Month-by-Month Table
+    st.markdown("#### 📋 Month-by-Month Profit Breakdown")
+    display_m_df = m_df[["Month", "Received (Credits)", "Sent (Debits)", "Net Profit / Loss", "Status", "Margin %", "Transactions"]]
+
+    st.dataframe(
+        display_m_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Received (Credits)": st.column_config.NumberColumn(format="₹ %0.2f"),
+            "Sent (Debits)": st.column_config.NumberColumn(format="₹ %0.2f"),
+            "Net Profit / Loss": st.column_config.NumberColumn(format="₹ %0.2f"),
+            "Margin %": st.column_config.NumberColumn(format="%0.1f %%"),
+        },
+    )
+
+    # 3. Bank-wise Breakdown Expander
+    with st.expander("🏦 View Bank-Wise Breakdown for Each Month"):
+        b_grp = valid.groupby(["YearMonth", "Month", "Bank", "Type"])["Amount"].sum().unstack(fill_value=0.0).reset_index()
+        if "Credit" not in b_grp:
+            b_grp["Credit"] = 0.0
+        if "Debit" not in b_grp:
+            b_grp["Debit"] = 0.0
+        b_grp["Net Profit / Loss"] = b_grp["Credit"] - b_grp["Debit"]
+        b_grp["Status"] = b_grp["Net Profit / Loss"].apply(lambda x: "🟢 Profit" if x >= 0 else "🔴 Deficit")
+        b_grp.rename(columns={"Credit": "Received (Credits)", "Debit": "Sent (Debits)"}, inplace=True)
+        b_display = b_grp.sort_values(["YearMonth", "Bank"], ascending=[False, True])[
+            ["Month", "Bank", "Received (Credits)", "Sent (Debits)", "Net Profit / Loss", "Status"]
+        ]
+        st.dataframe(
+            b_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Received (Credits)": st.column_config.NumberColumn(format="₹ %0.2f"),
+                "Sent (Debits)": st.column_config.NumberColumn(format="₹ %0.2f"),
+                "Net Profit / Loss": st.column_config.NumberColumn(format="₹ %0.2f"),
+            },
+        )
+
+    # 4. Download Report
+    report_bytes = export_monthly_report(df)
+    st.download_button(
+        "📥 Download Monthly Profit Report (.xlsx)",
+        data=report_bytes,
+        file_name="monthly-profit-report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="download_monthly_profit_btn",
+    )
 
 
 def app() -> None:
@@ -1172,201 +1349,221 @@ def app() -> None:
 
     combined = apply_assignments(combined, assignments)
 
-    # Filters: Bank Account & Time Period
-    filter_col1, filter_col2 = st.columns(2)
-    with filter_col1:
-        all_banks = ["All Banks"] + sorted([b for b in combined["Bank"].dropna().unique().tolist() if b])
-        selected_bank = st.selectbox("Bank Account", options=all_banks, index=0)
-    with filter_col2:
-        period_options = [
-            "All Time",
-            "This Month",
-            "Last 30 Days",
-            "Current Financial Year (Apr-Mar)",
-            "Custom Date Range",
-        ]
-        selected_period = st.selectbox("Period", options=period_options, index=0)
+    tab_search, tab_profit = st.tabs(["🔎 Unified Transaction Search", "💰 Monthly Profit & Cash Flow"])
 
-    custom_start_date = None
-    custom_end_date = None
-    if selected_period == "Custom Date Range":
-        d_col1, d_col2 = st.columns(2)
-        with d_col1:
-            custom_start_date = st.date_input("From Date", value=None)
-        with d_col2:
-            custom_end_date = st.date_input("To Date", value=None)
-
-    filtered_df = combined.copy()
-    if selected_bank != "All Banks":
-        filtered_df = filtered_df[filtered_df["Bank"] == selected_bank].copy()
-
-    if selected_period != "All Time" and not filtered_df.empty:
-        parsed_dates = pd.to_datetime(filtered_df["Date"], format="%d-%m-%Y", errors="coerce")
-        valid_dates = parsed_dates.dropna()
-        ref_date = valid_dates.max() if not valid_dates.empty else pd.Timestamp(datetime.now())
-
-        if selected_period == "This Month":
-            mask = (parsed_dates.dt.year == ref_date.year) & (parsed_dates.dt.month == ref_date.month)
-            filtered_df = filtered_df[mask].copy()
-        elif selected_period == "Last 30 Days":
-            cutoff = ref_date - pd.Timedelta(days=30)
-            mask = (parsed_dates >= cutoff) & (parsed_dates <= ref_date)
-            filtered_df = filtered_df[mask].copy()
-        elif selected_period == "Current Financial Year (Apr-Mar)":
-            fy_start_year = ref_date.year if ref_date.month >= 4 else ref_date.year - 1
-            fy_start = pd.Timestamp(year=fy_start_year, month=4, day=1)
-            fy_end = pd.Timestamp(year=fy_start_year + 1, month=3, day=31, hour=23, minute=59, second=59)
-            mask = (parsed_dates >= fy_start) & (parsed_dates <= fy_end)
-            filtered_df = filtered_df[mask].copy()
-        elif selected_period == "Custom Date Range":
-            mask = pd.Series(True, index=filtered_df.index)
-            if custom_start_date:
-                mask &= (parsed_dates >= pd.Timestamp(custom_start_date))
-            if custom_end_date:
-                mask &= (parsed_dates <= pd.Timestamp(custom_end_date))
-            filtered_df = filtered_df[mask].copy()
-
-    search_modes = {"UTR / Reference": "utr", "Date": "date", "Amount": "amount"}
-    selected_mode = st.radio("Search by", list(search_modes.keys()), horizontal=True)
-    mode = search_modes[selected_mode]
-
-    if mode == "utr":
-        all_ids = sorted(filtered_df.loc[filtered_df["UTR / Reference"] != "", "UTR / Reference"].drop_duplicates().tolist())
-        col_search, col_copy = st.columns([5, 1], vertical_alignment="bottom")
-        with col_search:
-            effective_query = st.selectbox(
-                "Search UTR / Reference",
-                options=all_ids,
-                index=None,
-                placeholder="Start typing a UTR (for example: 3964)",
-                accept_new_options=True,
-            ) or ""
-        with col_copy:
-            if effective_query:
-                render_single_copy_btn(effective_query, label="📋 Copy UTR")
-    elif mode == "date":
-        effective_query = st.text_input(
-            "Search Date",
-            placeholder="Enter date (e.g. 07-10-2026, 10-2026, or 2026)",
-        ).strip()
-    else:  # amount
-        effective_query = st.text_input(
-            "Search Amount",
-            placeholder="Enter amount (e.g. 25000, 25,000, or ₹25,000)",
-        ).strip()
-
-    results = search_transactions(filtered_df, effective_query, mode)
-
-    result_ids = results[results["UTR / Reference"] != ""]["UTR / Reference"]
-    duplicated = result_ids[result_ids.duplicated(keep=False)].unique().tolist()
-    if duplicated:
-        st.warning(f"Duplicate identifier detected in these results: {', '.join(duplicated[:8])}" + (" …" if len(duplicated) > 8 else ""))
-    stored_party_names = load_stored_party_names(sb_client, combined)
-
-    st.subheader(f"Results ({len(results):,})")
-    st.caption("💡 Click on any transaction's **Party Name** cell to enter party name (matching saved names will appear while typing).")
-
-    render_bank_color_legend(results)
-
-    inject_party_autocomplete(stored_party_names)
-
-    results = results.reset_index(drop=True)
-
-    if "editor_version" not in st.session_state:
-        st.session_state.editor_version = 0
-
-    editor_key = f"transactions_editor_{st.session_state.editor_version}"
-
-    display_columns = [
-        "Bank", "Date", "Description", "Party Name", "Amount", "Type",
-        "UTR / Reference", "Balance", "Duplicate UTR",
-    ]
-
-    styled_results = style_table_by_bank(results[display_columns])
-
-    edited_results = st.data_editor(
-        styled_results,
-        disabled=[col for col in display_columns if col != "Party Name"],
-        use_container_width=True,
-        hide_index=True,
-        key=editor_key,
-        column_config={
-            "Bank": st.column_config.TextColumn("Bank", help="Transaction rows are color-coded by Bank"),
-            "Amount": st.column_config.NumberColumn(format="₹ %0.2f"),
-            "Balance": st.column_config.NumberColumn(format="₹ %0.2f"),
-            "Party Name": st.column_config.TextColumn(
-                "Party Name",
-                help="Click or double-click to type party name (matching saved names will appear while typing)",
-            ),
-        },
-    )
-
-    editor_state = st.session_state.get(editor_key, {})
-    edited_rows = editor_state.get("edited_rows", {})
-
-    changes_to_apply: dict[int, str] = {}
-    if edited_rows:
-        for idx_raw, col_edits in edited_rows.items():
-            if "Party Name" in col_edits:
-                changes_to_apply[int(idx_raw)] = clean_text(col_edits["Party Name"])
-    else:
-        diff = (
-            edited_results["Party Name"].fillna("").astype(str).str.strip()
-            != results["Party Name"].fillna("").astype(str).str.strip()
-        )
-        if diff.any():
-            for idx in results.index[diff]:
-                changes_to_apply[int(idx)] = clean_text(edited_results.loc[idx, "Party Name"])
-
-    if changes_to_apply:
-        updated_count = 0
-        for idx, new_val in changes_to_apply.items():
-            if idx in results.index:
-                fp = results.loc[idx, "fingerprint"]
-                assign_party_name_to_transactions([fp], new_val, combined, sb_client)
-                updated_count += 1
-
-        st.session_state["cached_transactions"] = combined
-        st.session_state.editor_version += 1
-        st.toast(f"Saved party name for {updated_count} transaction{'s' if updated_count > 1 else ''}.", icon="✅")
-        st.rerun()
-
-    with st.expander(f"📁 Stored Party Names ({len(stored_party_names)})"):
-        st.markdown("**Directory of stored party names used for auto-completion suggestions.**")
-        col_new_p, col_add_btn = st.columns([4, 1.2], vertical_alignment="bottom")
-        with col_new_p:
-            new_party_to_add = st.text_input(
-                "Add a new party name to suggestions list",
-                placeholder="e.g. SRI RAMA MEDICALS",
-                key="add_party_input",
-            )
-        with col_add_btn:
-            if st.button("➕ Add Name", use_container_width=True, key="add_party_btn"):
-                clean_new = clean_text(new_party_to_add).strip()
-                if clean_new:
-                    if clean_new not in stored_party_names:
-                        stored_party_names.append(clean_new)
-                        save_stored_party_names(stored_party_names, sb_client)
-                        st.toast(f"Added '{clean_new}' to stored party names.", icon="✅")
-                        st.rerun()
-                    else:
-                        st.info(f"'{clean_new}' is already in stored party names.")
-
-        if stored_party_names:
-            counts = combined["Party Name"].value_counts().to_dict() if not combined.empty and "Party Name" in combined.columns else {}
-            p_data = [
-                {"Party Name": p, "Assigned Transactions": counts.get(p, 0)}
-                for p in stored_party_names
+    with tab_search:
+        # Filters: Bank Account & Time Period
+        filter_col1, filter_col2 = st.columns(2)
+        with filter_col1:
+            all_banks = ["All Banks"] + sorted([b for b in combined["Bank"].dropna().unique().tolist() if b])
+            selected_bank = st.selectbox("Bank Account", options=all_banks, index=0)
+        with filter_col2:
+            period_options = [
+                "All Time",
+                "This Month",
+                "Last 30 Days",
+                "Current Financial Year (Apr-Mar)",
+                "Custom Date Range",
             ]
-            st.dataframe(pd.DataFrame(p_data), use_container_width=True, hide_index=True)
+            selected_period = st.selectbox("Period", options=period_options, index=0)
 
-    export = export_excel(results)
-    st.download_button(
-        "Download displayed results as Excel",
-        export,
-        "unified-search-results.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+        custom_start_date = None
+        custom_end_date = None
+        if selected_period == "Custom Date Range":
+            d_col1, d_col2 = st.columns(2)
+            with d_col1:
+                custom_start_date = st.date_input("From Date", value=None)
+            with d_col2:
+                custom_end_date = st.date_input("To Date", value=None)
+
+        filtered_df = combined.copy()
+        if selected_bank != "All Banks":
+            filtered_df = filtered_df[filtered_df["Bank"] == selected_bank].copy()
+
+        if selected_period != "All Time" and not filtered_df.empty:
+            parsed_dates = pd.to_datetime(filtered_df["Date"], format="%d-%m-%Y", errors="coerce")
+            valid_dates = parsed_dates.dropna()
+            ref_date = valid_dates.max() if not valid_dates.empty else pd.Timestamp(datetime.now())
+
+            if selected_period == "This Month":
+                mask = (parsed_dates.dt.year == ref_date.year) & (parsed_dates.dt.month == ref_date.month)
+                filtered_df = filtered_df[mask].copy()
+            elif selected_period == "Last 30 Days":
+                cutoff = ref_date - pd.Timedelta(days=30)
+                mask = (parsed_dates >= cutoff) & (parsed_dates <= ref_date)
+                filtered_df = filtered_df[mask].copy()
+            elif selected_period == "Current Financial Year (Apr-Mar)":
+                fy_start_year = ref_date.year if ref_date.month >= 4 else ref_date.year - 1
+                fy_start = pd.Timestamp(year=fy_start_year, month=4, day=1)
+                fy_end = pd.Timestamp(year=fy_start_year + 1, month=3, day=31, hour=23, minute=59, second=59)
+                mask = (parsed_dates >= fy_start) & (parsed_dates <= fy_end)
+                filtered_df = filtered_df[mask].copy()
+            elif selected_period == "Custom Date Range":
+                mask = pd.Series(True, index=filtered_df.index)
+                if custom_start_date:
+                    mask &= (parsed_dates >= pd.Timestamp(custom_start_date))
+                if custom_end_date:
+                    mask &= (parsed_dates <= pd.Timestamp(custom_end_date))
+                filtered_df = filtered_df[mask].copy()
+
+        # Quick Cash Flow Ribbon on search screen
+        rec_sum = float(filtered_df.loc[filtered_df["Type"] == "Credit", "Amount"].sum()) if not filtered_df.empty else 0.0
+        sent_sum = float(filtered_df.loc[filtered_df["Type"] == "Debit", "Amount"].sum()) if not filtered_df.empty else 0.0
+        net_sum = rec_sum - sent_sum
+
+        q_col1, q_col2, q_col3 = st.columns(3)
+        with q_col1:
+            st.metric("Total Received (Inflows)", f"₹ {rec_sum:,.2f}", help="Total money received for selected bank & period")
+        with q_col2:
+            st.metric("Total Sent (Outflows)", f"₹ {sent_sum:,.2f}", help="Total money paid out for selected bank & period")
+        with q_col3:
+            status_label = "🟢 In Profit" if net_sum >= 0 else "🔴 In Deficit"
+            st.metric("Net Surplus / Profit", f"₹ {net_sum:,.2f}", delta=status_label, delta_color="normal" if net_sum >= 0 else "inverse")
+
+        search_modes = {"UTR / Reference": "utr", "Date": "date", "Amount": "amount"}
+        selected_mode = st.radio("Search by", list(search_modes.keys()), horizontal=True)
+        mode = search_modes[selected_mode]
+
+        if mode == "utr":
+            all_ids = sorted(filtered_df.loc[filtered_df["UTR / Reference"] != "", "UTR / Reference"].drop_duplicates().tolist())
+            col_search, col_copy = st.columns([5, 1], vertical_alignment="bottom")
+            with col_search:
+                effective_query = st.selectbox(
+                    "Search UTR / Reference",
+                    options=all_ids,
+                    index=None,
+                    placeholder="Start typing a UTR (for example: 3964)",
+                    accept_new_options=True,
+                ) or ""
+            with col_copy:
+                if effective_query:
+                    render_single_copy_btn(effective_query, label="📋 Copy UTR")
+        elif mode == "date":
+            effective_query = st.text_input(
+                "Search Date",
+                placeholder="Enter date (e.g. 07-10-2026, 10-2026, or 2026)",
+            ).strip()
+        else:  # amount
+            effective_query = st.text_input(
+                "Search Amount",
+                placeholder="Enter amount (e.g. 25000, 25,000, or ₹25,000)",
+            ).strip()
+
+        results = search_transactions(filtered_df, effective_query, mode)
+
+        result_ids = results[results["UTR / Reference"] != ""]["UTR / Reference"]
+        duplicated = result_ids[result_ids.duplicated(keep=False)].unique().tolist()
+        if duplicated:
+            st.warning(f"Duplicate identifier detected in these results: {', '.join(duplicated[:8])}" + (" …" if len(duplicated) > 8 else ""))
+        stored_party_names = load_stored_party_names(sb_client, combined)
+
+        st.subheader(f"Results ({len(results):,})")
+        st.caption("💡 Click on any transaction's **Party Name** cell to enter party name (matching saved names will appear while typing).")
+
+        render_bank_color_legend(results)
+
+        inject_party_autocomplete(stored_party_names)
+
+        results = results.reset_index(drop=True)
+
+        if "editor_version" not in st.session_state:
+            st.session_state.editor_version = 0
+
+        editor_key = f"transactions_editor_{st.session_state.editor_version}"
+
+        display_columns = [
+            "Bank", "Date", "Description", "Party Name", "Amount", "Type",
+            "UTR / Reference", "Balance", "Duplicate UTR",
+        ]
+
+        styled_results = style_table_by_bank(results[display_columns])
+
+        edited_results = st.data_editor(
+            styled_results,
+            disabled=[col for col in display_columns if col != "Party Name"],
+            use_container_width=True,
+            hide_index=True,
+            key=editor_key,
+            column_config={
+                "Bank": st.column_config.TextColumn("Bank", help="Transaction rows are color-coded by Bank"),
+                "Amount": st.column_config.NumberColumn(format="₹ %0.2f"),
+                "Balance": st.column_config.NumberColumn(format="₹ %0.2f"),
+                "Party Name": st.column_config.TextColumn(
+                    "Party Name",
+                    help="Click or double-click to type party name (matching saved names will appear while typing)",
+                ),
+            },
+        )
+
+        editor_state = st.session_state.get(editor_key, {})
+        edited_rows = editor_state.get("edited_rows", {})
+
+        changes_to_apply: dict[int, str] = {}
+        if edited_rows:
+            for idx_raw, col_edits in edited_rows.items():
+                if "Party Name" in col_edits:
+                    changes_to_apply[int(idx_raw)] = clean_text(col_edits["Party Name"])
+        else:
+            diff = (
+                edited_results["Party Name"].fillna("").astype(str).str.strip()
+                != results["Party Name"].fillna("").astype(str).str.strip()
+            )
+            if diff.any():
+                for idx in results.index[diff]:
+                    changes_to_apply[int(idx)] = clean_text(edited_results.loc[idx, "Party Name"])
+
+        if changes_to_apply:
+            updated_count = 0
+            for idx, new_val in changes_to_apply.items():
+                if idx in results.index:
+                    fp = results.loc[idx, "fingerprint"]
+                    assign_party_name_to_transactions([fp], new_val, combined, sb_client)
+                    updated_count += 1
+
+            st.session_state["cached_transactions"] = combined
+            st.session_state.editor_version += 1
+            st.toast(f"Saved party name for {updated_count} transaction{'s' if updated_count > 1 else ''}.", icon="✅")
+            st.rerun()
+
+        with st.expander(f"📁 Stored Party Names ({len(stored_party_names)})"):
+            st.markdown("**Directory of stored party names used for auto-completion suggestions.**")
+            col_new_p, col_add_btn = st.columns([4, 1.2], vertical_alignment="bottom")
+            with col_new_p:
+                new_party_to_add = st.text_input(
+                    "Add a new party name to suggestions list",
+                    placeholder="e.g. SRI RAMA MEDICALS",
+                    key="add_party_input",
+                )
+            with col_add_btn:
+                if st.button("➕ Add Name", use_container_width=True, key="add_party_btn"):
+                    clean_new = clean_text(new_party_to_add).strip()
+                    if clean_new:
+                        if clean_new not in stored_party_names:
+                            stored_party_names.append(clean_new)
+                            save_stored_party_names(stored_party_names, sb_client)
+                            st.toast(f"Added '{clean_new}' to stored party names.", icon="✅")
+                            st.rerun()
+                        else:
+                            st.info(f"'{clean_new}' is already in stored party names.")
+
+            if stored_party_names:
+                counts = combined["Party Name"].value_counts().to_dict() if not combined.empty and "Party Name" in combined.columns else {}
+                p_data = [
+                    {"Party Name": p, "Assigned Transactions": counts.get(p, 0)}
+                    for p in stored_party_names
+                ]
+                st.dataframe(pd.DataFrame(p_data), use_container_width=True, hide_index=True)
+
+        export = export_excel(results)
+        st.download_button(
+            "Download displayed results as Excel",
+            export,
+            "unified-search-results.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    with tab_profit:
+        render_monthly_profit_section(combined)
 
     render_backup_restore_section(combined, assignments, sb_client)
 

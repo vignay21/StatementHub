@@ -68,9 +68,25 @@ Choose **Date** and enter a date in `DD-MM-YYYY` format, for example `01-09-2026
 
 Choose **Amount** and enter an exact transaction amount, for example `25000`, `25,000`, or `₹25,000`. The results show all debit and credit transactions with that exact amount.
 
-## Understanding the results
+## Understanding the results & Bank color coding
 
-The table displays Bank, Date, Description, **Party Name**, Amount, Type, UTR / Reference, Balance, and Duplicate UTR. Use **Download displayed results as Excel** to save the current search results.
+The transaction table color-codes rows by the issuing bank for instant visual differentiation:
+- **🟢 Canara Bank**: Subtle emerald green tint
+- **🟠 ICICI Bank**: Subtle warm coral orange tint
+- **🔵 HDFC Bank**: Subtle modern blue tint
+
+A live **Bank Legend** badge bar above the table displays active bank counts. Use **Download displayed results as Excel** to save the current search results.
+
+## Monthly Profit & Cash Flow Dashboard
+
+Switch to the **💰 Monthly Profit & Cash Flow** tab to track your net financial health over time:
+
+- **Top KPI Cards**: Real-time totals for **Total Received (Credits)**, **Total Sent (Debits)**, **Net Profit / Surplus**, and **Profit Margin %**.
+- **Interactive Inflows vs. Outflows Chart**: Month-by-month comparative bar chart (Green for Money In, Red for Money Out).
+- **Monthly Profit Breakdown Table**: Tabular statement for each month showing Received, Sent, Net Profit/Loss, Margin %, and status (🟢 Profit / 🔴 Deficit).
+- **Bank-Wise Monthly Breakdown**: Inspect how each bank (Canara, ICICI, HDFC) contributed to incoming and outgoing cash each month.
+- **Excel Report Download**: One-click download of the complete monthly P&L and bank breakdown workbook.
+- **Search Screen Quick Ribbon**: Real-time summary cards right under the bank & period filters on the search screen.
 
 ## Assign business or party names
 
