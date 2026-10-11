@@ -119,6 +119,28 @@ def detect_internal_transfers(data: pd.DataFrame) -> pd.Series:
     return party_mask | utr_mask
 
 
+def detect_fd_investments(data: pd.DataFrame) -> pd.Series:
+    """Automatically detect Fixed Deposits and Capital Investments.
+
+    Criteria:
+    1. Party Name contains FD, FIXED DEPOSIT, TERM DEPOSIT, INVESTMENT, or DIGITALFD.
+    2. Description/Narration contains DIGITALFD, FIXED DEPOSIT, TERM DEPOSIT, FD THROUGH, FD RENEW, etc.
+    """
+    if data.empty:
+        return pd.Series(False, index=data.index)
+
+    party_str = data["Party Name"].fillna("").astype(str).str.strip().str.lower()
+    party_mask = party_str.str.contains(r"\bfd\b|fixed deposit|term deposit|investment|digitalfd", regex=True)
+
+    desc_str = data["Description"].fillna("").astype(str).str.strip().str.lower()
+    desc_mask = desc_str.str.contains(
+        r"digitalfd|fixed deposit|term deposit|\bfd through\b|\bfd renew\b|\bfd clos\b|\btd renew\b|\btd clos\b",
+        regex=True,
+    )
+
+    return party_mask | desc_mask
+
+
 def header_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", clean_text(value).lower()).strip()
 
@@ -1145,8 +1167,8 @@ def render_backup_restore_section(combined: pd.DataFrame, assignments: dict[str,
                     st.error(f"Invalid backup file format: {exc}")
 
 
-def export_monthly_report(transactions: pd.DataFrame, exclude_internal: bool = True) -> bytes:
-    """Generate a multi-sheet Excel workbook with monthly profit & bank breakdown."""
+def export_monthly_report(transactions: pd.DataFrame, exclude_internal: bool = True, exclude_fd: bool = True) -> bytes:
+    """Generate a multi-sheet Excel workbook with monthly profit, bank breakdown, FDs, & internal transfers."""
     if transactions.empty or "Date" not in transactions.columns or "Amount" not in transactions.columns:
         return b""
 
@@ -1163,9 +1185,14 @@ def export_monthly_report(transactions: pd.DataFrame, exclude_internal: bool = T
     valid["YearMonth"] = valid["DateTime"].dt.strftime("%Y-%m")
     valid["Month"] = valid["DateTime"].dt.strftime("%B %Y")
     valid["Is_Internal"] = detect_internal_transfers(valid)
+    valid["Is_FD"] = detect_fd_investments(valid)
 
-    # Filtered dataset if exclude_internal is requested
-    biz_df = valid[~valid["Is_Internal"]] if exclude_internal else valid
+    # Filtered dataset if exclude_internal or exclude_fd is requested
+    biz_df = valid.copy()
+    if exclude_internal:
+        biz_df = biz_df[~biz_df["Is_Internal"]]
+    if exclude_fd:
+        biz_df = biz_df[~biz_df["Is_FD"]]
 
     # Monthly Summary
     m_grp = biz_df.groupby(["YearMonth", "Month", "Type"])["Amount"].sum().unstack(fill_value=0.0)
@@ -1181,12 +1208,17 @@ def export_monthly_report(transactions: pd.DataFrame, exclude_internal: bool = T
         s_dr = float(s_grp.loc[s_grp["Type"] == "Debit", "Amount"].sum())
         self_monthly[(ym, m_name)] = max(s_cr, s_dr) if (s_cr > 0 and s_dr > 0) else (s_cr + s_dr)
 
+    fd_monthly: dict[tuple[str, str], float] = {}
+    for (ym, m_name), f_grp in valid[valid["Is_FD"]].groupby(["YearMonth", "Month"]):
+        fd_monthly[(ym, m_name)] = float(f_grp["Amount"].sum())
+
     m_df = m_grp.reset_index().sort_values("YearMonth", ascending=False)
     m_df["Net Profit / Surplus"] = m_df["Credit"] - m_df["Debit"]
     m_df["Status"] = m_df["Net Profit / Surplus"].apply(lambda x: "Profit" if x >= 0 else "Deficit")
     m_df["Margin %"] = m_df.apply(
         lambda r: round((r["Net Profit / Surplus"] / r["Credit"] * 100), 2) if r["Credit"] > 0 else 0.0, axis=1
     )
+    m_df["Fixed Deposits (Investments)"] = m_df.apply(lambda r: fd_monthly.get((r["YearMonth"], r["Month"]), 0.0), axis=1)
     m_df["Internal Transfers (Contra)"] = m_df.apply(lambda r: self_monthly.get((r["YearMonth"], r["Month"]), 0.0), axis=1)
     m_df["Transactions"] = m_df.apply(lambda r: counts.get((r["YearMonth"], r["Month"]), 0), axis=1)
     m_df.rename(columns={"Credit": "Business Received", "Debit": "Business Sent"}, inplace=True)
@@ -1203,6 +1235,11 @@ def export_monthly_report(transactions: pd.DataFrame, exclude_internal: bool = T
     b_grp.rename(columns={"Credit": "Business Received", "Debit": "Business Sent"}, inplace=True)
     b_export = b_grp.sort_values(["YearMonth", "Bank"], ascending=[False, True]).drop(columns=["YearMonth"], errors="ignore")
 
+    # Fixed Deposits & Investments Sheet
+    fd_df = valid[valid["Is_FD"]][
+        ["Date", "Bank", "Type", "Amount", "UTR / Reference", "Description", "Party Name"]
+    ].copy()
+
     # Internal Transfers Sheet
     internal_df = valid[valid["Is_Internal"]][
         ["Date", "Bank", "Type", "Amount", "UTR / Reference", "Description", "Party Name"]
@@ -1210,15 +1247,17 @@ def export_monthly_report(transactions: pd.DataFrame, exclude_internal: bool = T
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        m_export.to_excel(writer, sheet_name="Monthly Business Profit", index=False)
+        m_export.to_excel(writer, sheet_name="Monthly Operating Profit", index=False)
         b_export.to_excel(writer, sheet_name="Bank Breakdown", index=False)
+        if not fd_df.empty:
+            fd_df.to_excel(writer, sheet_name="Fixed Deposits & Investments", index=False)
         if not internal_df.empty:
             internal_df.to_excel(writer, sheet_name="Internal Self Transfers", index=False)
     return output.getvalue()
 
 
 def render_monthly_profit_section(combined: pd.DataFrame) -> None:
-    """Render interactive Monthly Profit & Cash Flow analytics dashboard with contra handling."""
+    """Render interactive Monthly Profit & Cash Flow analytics dashboard with contra and FD handling."""
     st.subheader("💰 Monthly Profit & Cash Flow Dashboard")
     st.caption("Track how much money you received, how much you spent, and your net monthly profit/deficit across bank accounts.")
 
@@ -1226,17 +1265,24 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
         st.info("No transaction data available to calculate monthly profit.")
         return
 
-    # Filter by bank and toggle self-transfers
+    # Filter by bank and toggles for self-transfers & FDs
     all_banks = ["All Banks"] + sorted([b for b in combined["Bank"].dropna().unique().tolist() if b])
-    p_col_bank, p_col_toggle = st.columns([2, 3], vertical_alignment="bottom")
+    p_col_bank, p_col_toggle1, p_col_toggle2 = st.columns([2, 2.5, 2.5], vertical_alignment="bottom")
     with p_col_bank:
         selected_bank = st.selectbox("Filter Analytics by Bank", options=all_banks, index=0, key="analytics_bank_filter")
-    with p_col_toggle:
+    with p_col_toggle1:
         exclude_internal = st.toggle(
-            "Exclude Internal Self-Transfers (Contra)",
+            "Exclude Self-Transfers (Contra)",
             value=True,
             help="Removes money transferred between your own accounts (e.g. ICICI to Canara) so incoming/outgoing cash reflects true customer revenue and business expenses.",
             key="exclude_internal_toggle",
+        )
+    with p_col_toggle2:
+        exclude_fd = st.toggle(
+            "Exclude Fixed Deposits (Investments)",
+            value=True,
+            help="Separates bank Fixed Deposits / Term Deposits so capital savings are not counted as business losses or expenses.",
+            key="exclude_fd_toggle",
         )
 
     df = combined.copy()
@@ -1257,14 +1303,22 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
     valid["YearMonth"] = valid["DateTime"].dt.strftime("%Y-%m")
     valid["Month"] = valid["DateTime"].dt.strftime("%B %Y")
     valid["Is_Internal"] = detect_internal_transfers(valid)
+    valid["Is_FD"] = detect_fd_investments(valid)
 
     # Calculate internal transfers sum
     int_dr = float(valid.loc[valid["Is_Internal"] & (valid["Type"] == "Debit"), "Amount"].sum())
     int_cr = float(valid.loc[valid["Is_Internal"] & (valid["Type"] == "Credit"), "Amount"].sum())
     total_internal = max(int_dr, int_cr) if (int_dr > 0 and int_cr > 0) else (int_dr + int_cr)
 
-    # Active dataset based on toggle
-    active_df = valid[~valid["Is_Internal"]] if exclude_internal else valid
+    # Calculate Fixed Deposits sum
+    total_fd = float(valid.loc[valid["Is_FD"], "Amount"].sum())
+
+    # Active dataset based on toggles
+    active_df = valid.copy()
+    if exclude_internal:
+        active_df = active_df[~active_df["Is_Internal"]]
+    if exclude_fd:
+        active_df = active_df[~active_df["Is_FD"]]
 
     total_rec = float(active_df.loc[active_df["Type"] == "Credit", "Amount"].sum())
     total_sent = float(active_df.loc[active_df["Type"] == "Debit", "Amount"].sum())
@@ -1272,24 +1326,28 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
     margin_pct = (net_profit / total_rec * 100) if total_rec > 0 else 0.0
 
     # Top KPI Cards
+    extra_kpis = []
+    if exclude_fd and total_fd > 0:
+        extra_kpis.append(("🏦 Fixed Deposits", format_inr(total_fd), "Bank Fixed Deposits & Capital Investments"))
     if exclude_internal and total_internal > 0:
-        kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-    else:
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        kpi5 = None
+        extra_kpis.append(("🔄 Internal Transfers", format_inr(total_internal), "Money transferred between your own accounts"))
 
-    with kpi1:
-        st.metric("Business Received" if exclude_internal else "Total Received", format_inr(total_rec), help="Real customer revenue into your account")
-    with kpi2:
-        st.metric("Business Sent" if exclude_internal else "Total Sent", format_inr(total_sent), help="Real vendor & business payments out of your account")
-    with kpi3:
+    kpi_cols = st.columns(4 + len(extra_kpis))
+    with kpi_cols[0]:
+        st.metric("Business Received" if (exclude_internal or exclude_fd) else "Total Received", format_inr(total_rec), help="Real customer revenue into your account")
+    with kpi_cols[1]:
+        st.metric("Business Sent" if (exclude_internal or exclude_fd) else "Total Sent", format_inr(total_sent), help="Real vendor & business payments out of your account")
+    with kpi_cols[2]:
         status_label = "🟢 Net Profit" if net_profit >= 0 else "🔴 Net Deficit"
-        st.metric("Net Business Profit" if exclude_internal else "Net Surplus / Profit", format_inr(net_profit), delta=status_label, delta_color="normal" if net_profit >= 0 else "inverse")
-    with kpi4:
+        st.metric("Net Business Profit" if (exclude_internal or exclude_fd) else "Net Surplus / Profit", format_inr(net_profit), delta=status_label, delta_color="normal" if net_profit >= 0 else "inverse")
+    with kpi_cols[3]:
         st.metric("Profit Margin", f"{margin_pct:+.1f}%", help="Percentage of received money retained as net profit")
-    if kpi5 is not None:
-        with kpi5:
-            st.metric("Internal Transfers", format_inr(total_internal), help="Money transferred between your own accounts (excluded from profit calculation)")
+    for i, (label, val, help_txt) in enumerate(extra_kpis):
+        with kpi_cols[4 + i]:
+            st.metric(label, val, help=help_txt)
+
+    if exclude_fd and total_fd > 0:
+        st.info(f"🏦 **Fixed Deposit Accounting Active:** Identified **{format_inr(total_fd)}** in Bank Fixed Deposits / Capital Investments and separated them from day-to-day business expenses.", icon="🏦")
 
     if exclude_internal and total_internal > 0:
         st.info(f"💡 **Contra Handling Active:** Excluded **{format_inr(total_internal)}** of internal self-transfers between accounts to display true business revenue and expenses.", icon="🔄")
@@ -1309,13 +1367,18 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
     m_df["Status"] = m_df["Net Profit / Loss"].apply(lambda x: "🟢 Profit" if x >= 0 else "🔴 Deficit")
     m_df["Margin %"] = m_df.apply(lambda r: round((r["Net Profit / Loss"] / r["Credit"] * 100), 1) if r["Credit"] > 0 else 0.0, axis=1)
 
-    # Monthly Internal amounts
+    # Monthly Internal & FD amounts
     self_monthly: dict[tuple[str, str], float] = {}
     for (ym, m_name), s_grp in valid[valid["Is_Internal"]].groupby(["YearMonth", "Month"]):
         s_cr = float(s_grp.loc[s_grp["Type"] == "Credit", "Amount"].sum())
         s_dr = float(s_grp.loc[s_grp["Type"] == "Debit", "Amount"].sum())
         self_monthly[(ym, m_name)] = max(s_cr, s_dr) if (s_cr > 0 and s_dr > 0) else (s_cr + s_dr)
 
+    fd_monthly: dict[tuple[str, str], float] = {}
+    for (ym, m_name), f_grp in valid[valid["Is_FD"]].groupby(["YearMonth", "Month"]):
+        fd_monthly[(ym, m_name)] = float(f_grp["Amount"].sum())
+
+    m_df["Fixed Deposits"] = m_df.apply(lambda r: fd_monthly.get((r["YearMonth"], r["Month"]), 0.0), axis=1)
     m_df["Self Transfers"] = m_df.apply(lambda r: self_monthly.get((r["YearMonth"], r["Month"]), 0.0), axis=1)
     m_df["Transactions"] = m_df.apply(lambda r: counts.get((r["YearMonth"], r["Month"]), 0), axis=1)
     m_df.rename(columns={"Credit": "Received (Credits)", "Debit": "Sent (Debits)"}, inplace=True)
@@ -1328,10 +1391,11 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
 
     # 2. Detailed Month-by-Month Table
     st.markdown("#### 📋 Month-by-Month Profit Breakdown")
-    display_m_df = m_df[["Month", "Received (Credits)", "Sent (Debits)", "Net Profit / Loss", "Self Transfers", "Status", "Margin %", "Transactions"]].copy()
+    display_m_df = m_df[["Month", "Received (Credits)", "Sent (Debits)", "Net Profit / Loss", "Fixed Deposits", "Self Transfers", "Status", "Margin %", "Transactions"]].copy()
     display_m_df["Received (Credits)"] = display_m_df["Received (Credits)"].apply(format_inr)
     display_m_df["Sent (Debits)"] = display_m_df["Sent (Debits)"].apply(format_inr)
     display_m_df["Net Profit / Loss"] = display_m_df["Net Profit / Loss"].apply(format_inr)
+    display_m_df["Fixed Deposits"] = display_m_df["Fixed Deposits"].apply(format_inr)
     display_m_df["Self Transfers"] = display_m_df["Self Transfers"].apply(format_inr)
 
     st.dataframe(
@@ -1365,7 +1429,17 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
             hide_index=True,
         )
 
-    # 4. View Detected Self-Transfers Expander
+    # 4. View Detected Fixed Deposits Expander
+    if total_fd > 0:
+        with st.expander(f"🏦 View All Fixed Deposits & Capital Investments ({len(valid[valid['Is_FD']]):,} entries)"):
+            st.markdown("**These transactions represent your capital savings/deposits and are separated from business operating expenses.**")
+            fd_display = valid[valid["Is_FD"]][
+                ["Date", "Bank", "Type", "Amount", "UTR / Reference", "Description", "Party Name"]
+            ].copy()
+            fd_display["Amount"] = fd_display["Amount"].apply(format_inr)
+            st.dataframe(fd_display, use_container_width=True, hide_index=True)
+
+    # 5. View Detected Self-Transfers Expander
     if total_internal > 0:
         with st.expander(f"🔄 View All Detected Internal Self-Transfers ({len(valid[valid['Is_Internal']]):,} entries)"):
             st.markdown("**These transactions move money between your own accounts and are excluded from business revenue and expenses.**")
@@ -1375,8 +1449,8 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
             self_display["Amount"] = self_display["Amount"].apply(format_inr)
             st.dataframe(self_display, use_container_width=True, hide_index=True)
 
-    # 5. Download Report
-    report_bytes = export_monthly_report(df, exclude_internal=exclude_internal)
+    # 6. Download Report
+    report_bytes = export_monthly_report(df, exclude_internal=exclude_internal, exclude_fd=exclude_fd)
     st.download_button(
         "📥 Download Monthly Profit Report (.xlsx)",
         data=report_bytes,
@@ -1529,25 +1603,33 @@ def app() -> None:
                     mask &= (parsed_dates <= pd.Timestamp(custom_end_date))
                 filtered_df = filtered_df[mask].copy()
 
-        # Quick Cash Flow Ribbon on search screen (with contra detection)
+        # Quick Cash Flow Ribbon on search screen (with contra & FD detection)
         is_internal_filtered = detect_internal_transfers(filtered_df)
-        rec_sum = float(filtered_df.loc[(~is_internal_filtered) & (filtered_df["Type"] == "Credit"), "Amount"].sum()) if not filtered_df.empty else 0.0
-        sent_sum = float(filtered_df.loc[(~is_internal_filtered) & (filtered_df["Type"] == "Debit"), "Amount"].sum()) if not filtered_df.empty else 0.0
+        is_fd_filtered = detect_fd_investments(filtered_df)
+        biz_filtered = filtered_df[(~is_internal_filtered) & (~is_fd_filtered)]
+        rec_sum = float(biz_filtered.loc[biz_filtered["Type"] == "Credit", "Amount"].sum()) if not biz_filtered.empty else 0.0
+        sent_sum = float(biz_filtered.loc[biz_filtered["Type"] == "Debit", "Amount"].sum()) if not biz_filtered.empty else 0.0
         net_sum = rec_sum - sent_sum
         int_filtered_dr = float(filtered_df.loc[is_internal_filtered & (filtered_df["Type"] == "Debit"), "Amount"].sum())
         int_filtered_cr = float(filtered_df.loc[is_internal_filtered & (filtered_df["Type"] == "Credit"), "Amount"].sum())
         internal_sum = max(int_filtered_dr, int_filtered_cr) if (int_filtered_dr > 0 and int_filtered_cr > 0) else (int_filtered_dr + int_filtered_cr)
+        fd_sum = float(filtered_df.loc[is_fd_filtered, "Amount"].sum())
 
         q_col1, q_col2, q_col3 = st.columns(3)
         with q_col1:
-            st.metric("Business Received (Inflows)", format_inr(rec_sum), help="Real customer revenue for selected bank & period (excludes self-transfers)")
+            st.metric("Business Received (Inflows)", format_inr(rec_sum), help="Real customer revenue for selected bank & period (excludes self-transfers & FDs)")
         with q_col2:
-            st.metric("Business Sent (Outflows)", format_inr(sent_sum), help="Real vendor & business payments for selected bank & period (excludes self-transfers)")
+            st.metric("Business Sent (Outflows)", format_inr(sent_sum), help="Real vendor & business payments for selected bank & period (excludes self-transfers & FDs)")
         with q_col3:
             status_label = "🟢 In Profit" if net_sum >= 0 else "🔴 In Deficit"
             st.metric("Net Business Profit", format_inr(net_sum), delta=status_label, delta_color="normal" if net_sum >= 0 else "inverse")
+        info_notes = []
         if internal_sum > 0:
-            st.caption(f"💡 Excluded **{format_inr(internal_sum)}** of internal self-transfers between your accounts.")
+            info_notes.append(f"🔄 Excluded **{format_inr(internal_sum)}** internal self-transfers")
+        if fd_sum > 0:
+            info_notes.append(f"🏦 Excluded **{format_inr(fd_sum)}** Fixed Deposits / Investments")
+        if info_notes:
+            st.caption("💡 " + " | ".join(info_notes))
 
         search_modes = {"UTR / Reference": "utr", "Date": "date", "Amount": "amount"}
         selected_mode = st.radio("Search by", list(search_modes.keys()), horizontal=True)
@@ -1595,6 +1677,7 @@ def app() -> None:
 
         results = results.reset_index(drop=True)
         results["Self Transfer"] = detect_internal_transfers(results)
+        results["FD / Investment"] = detect_fd_investments(results)
 
         if "editor_version" not in st.session_state:
             st.session_state.editor_version = 0
@@ -1603,7 +1686,7 @@ def app() -> None:
 
         display_columns = [
             "Bank", "Date", "Description", "Party Name", "Amount", "Type",
-            "UTR / Reference", "Balance", "Self Transfer", "Duplicate UTR",
+            "UTR / Reference", "Balance", "Self Transfer", "FD / Investment", "Duplicate UTR",
         ]
 
         styled_results = style_table_by_bank(results[display_columns])
@@ -1619,6 +1702,7 @@ def app() -> None:
                 "Amount": st.column_config.NumberColumn(format="₹ %0.2f"),
                 "Balance": st.column_config.NumberColumn(format="₹ %0.2f"),
                 "Self Transfer": st.column_config.CheckboxColumn("Self Transfer", help="Detected internal transfer between your own accounts"),
+                "FD / Investment": st.column_config.CheckboxColumn("FD / Investment", help="Detected Fixed Deposit or capital investment"),
                 "Party Name": st.column_config.TextColumn(
                     "Party Name",
                     help="Click or double-click to type party name (matching saved names will appear while typing)",
