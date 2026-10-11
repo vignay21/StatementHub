@@ -81,12 +81,18 @@ A live **Bank Legend** badge bar above the table displays active bank counts. Us
 
 Switch to the **💰 Monthly Profit & Cash Flow** tab to track your net financial health over time:
 
-- **Top KPI Cards**: Real-time totals for **Total Received (Credits)**, **Total Sent (Debits)**, **Net Profit / Surplus**, and **Profit Margin %**.
+- **Automatic Contra / Self-Transfer Detection**:
+  - Automatically identifies internal transfers between your own accounts based on:
+    1. Party Name set to `SELF TRANSFER`, `SELF`, `CONTRA`, or `OWN ACCOUNT`.
+    2. Identical UTR appearing as a Debit in Bank A and a Credit in Bank B.
+  - **Exclusion Toggle**: Automatically excludes internal movements so your receipts and payments reflect true customer sales and vendor expenses, preventing artificial turnover inflation.
+  - **Internal Transfers Metric & Sheet**: Displays total internal transfers and exports them into a dedicated sheet in the Excel report.
+- **Top KPI Cards**: Real-time totals for **Business Received (Inflows)**, **Business Sent (Outflows)**, **Net Business Profit**, **Profit Margin %**, and **Internal Transfers (Contra)**.
 - **Interactive Inflows vs. Outflows Chart**: Month-by-month comparative bar chart (Green for Money In, Red for Money Out).
-- **Monthly Profit Breakdown Table**: Tabular statement for each month showing Received, Sent, Net Profit/Loss, Margin %, and status (🟢 Profit / 🔴 Deficit).
+- **Monthly Profit Breakdown Table**: Tabular statement for each month showing Business Received, Business Sent, Net Profit/Loss, Internal Transfers, Margin %, and status (🟢 Profit / 🔴 Deficit).
 - **Bank-Wise Monthly Breakdown**: Inspect how each bank (Canara, ICICI, HDFC) contributed to incoming and outgoing cash each month.
-- **Excel Report Download**: One-click download of the complete monthly P&L and bank breakdown workbook.
-- **Search Screen Quick Ribbon**: Real-time summary cards right under the bank & period filters on the search screen.
+- **Excel Report Download**: One-click download of the complete 3-sheet workbook (`Monthly Business Profit`, `Bank Breakdown`, and `Internal Self Transfers`).
+- **Search Screen Quick Ribbon & Indicator**: Real-time summary cards and a `Self Transfer` checkbox column in the search table.
 
 ## Assign business or party names
 
