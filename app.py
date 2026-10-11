@@ -1325,26 +1325,70 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
     net_profit = total_rec - total_sent
     margin_pct = (net_profit / total_rec * 100) if total_rec > 0 else 0.0
 
-    # Top KPI Cards
-    extra_kpis = []
-    if exclude_fd and total_fd > 0:
-        extra_kpis.append(("🏦 Fixed Deposits", format_inr(total_fd), "Bank Fixed Deposits & Capital Investments"))
-    if exclude_internal and total_internal > 0:
-        extra_kpis.append(("🔄 Internal Transfers", format_inr(total_internal), "Money transferred between your own accounts"))
-
-    kpi_cols = st.columns(4 + len(extra_kpis))
-    with kpi_cols[0]:
-        st.metric("Business Received" if (exclude_internal or exclude_fd) else "Total Received", format_inr(total_rec), help="Real customer revenue into your account")
-    with kpi_cols[1]:
-        st.metric("Business Sent" if (exclude_internal or exclude_fd) else "Total Sent", format_inr(total_sent), help="Real vendor & business payments out of your account")
-    with kpi_cols[2]:
+    # Top KPI Cards - Row 1: Core Operating Performance (4 spacious columns)
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    with kpi1:
+        st.metric(
+            "Business Received" if (exclude_internal or exclude_fd) else "Total Received",
+            format_inr(total_rec),
+            help="Real customer revenue into your account",
+        )
+    with kpi2:
+        st.metric(
+            "Business Sent" if (exclude_internal or exclude_fd) else "Total Sent",
+            format_inr(total_sent),
+            help="Real vendor & business payments out of your account",
+        )
+    with kpi3:
         status_label = "🟢 Net Profit" if net_profit >= 0 else "🔴 Net Deficit"
-        st.metric("Net Business Profit" if (exclude_internal or exclude_fd) else "Net Surplus / Profit", format_inr(net_profit), delta=status_label, delta_color="normal" if net_profit >= 0 else "inverse")
-    with kpi_cols[3]:
-        st.metric("Profit Margin", f"{margin_pct:+.1f}%", help="Percentage of received money retained as net profit")
-    for i, (label, val, help_txt) in enumerate(extra_kpis):
-        with kpi_cols[4 + i]:
-            st.metric(label, val, help=help_txt)
+        st.metric(
+            "Net Business Profit" if (exclude_internal or exclude_fd) else "Net Surplus / Profit",
+            format_inr(net_profit),
+            delta=status_label,
+            delta_color="normal" if net_profit >= 0 else "inverse",
+        )
+    with kpi4:
+        st.metric(
+            "Profit Margin",
+            f"{margin_pct:+.1f}%",
+            help="Percentage of received money retained as net profit",
+        )
+
+    # Top KPI Cards - Row 2: Asset Investments & Internal Movements (dedicated row below for full visibility)
+    has_fd = exclude_fd and total_fd > 0
+    has_internal = exclude_internal and total_internal > 0
+
+    if has_fd or has_internal:
+        if has_fd and has_internal:
+            sub_col1, sub_col2 = st.columns(2)
+            with sub_col1:
+                st.metric(
+                    "🏦 Fixed Deposits & Capital Investments",
+                    format_inr(total_fd),
+                    help="Capital savings deposited into Fixed Deposits / Term Deposits (separated from operating expenses)",
+                )
+            with sub_col2:
+                st.metric(
+                    "🔄 Internal Self-Transfers (Contra)",
+                    format_inr(total_internal),
+                    help="Money transferred between your own bank accounts (excluded to prevent turnover inflation)",
+                )
+        elif has_fd:
+            sub_col1, _ = st.columns([1, 1])
+            with sub_col1:
+                st.metric(
+                    "🏦 Fixed Deposits & Capital Investments",
+                    format_inr(total_fd),
+                    help="Capital savings deposited into Fixed Deposits / Term Deposits (separated from operating expenses)",
+                )
+        elif has_internal:
+            sub_col1, _ = st.columns([1, 1])
+            with sub_col1:
+                st.metric(
+                    "🔄 Internal Self-Transfers (Contra)",
+                    format_inr(total_internal),
+                    help="Money transferred between your own bank accounts (excluded to prevent turnover inflation)",
+                )
 
     if exclude_fd and total_fd > 0:
         st.info(f"🏦 **Fixed Deposit Accounting Active:** Identified **{format_inr(total_fd)}** in Bank Fixed Deposits / Capital Investments and separated them from day-to-day business expenses.", icon="🏦")
@@ -1466,6 +1510,26 @@ def app() -> None:
     st.set_page_config(page_title="Unified Bank Search", page_icon="🔎", layout="wide")
     sb_client = db.get_supabase_client()
     inject_keyboard_shortcuts()
+
+    # Prevent metric numbers from truncating with ellipsis (...)
+    st.markdown(
+        """
+        <style>
+        [data-testid="stMetricValue"] {
+            font-size: clamp(1.15rem, 1.7vw, 1.85rem) !important;
+            white-space: nowrap !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+        }
+        [data-testid="stMetricValue"] > div {
+            overflow: visible !important;
+            text-overflow: clip !important;
+            white-space: nowrap !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     col_title, col_status = st.columns([4, 1], vertical_alignment="center")
     with col_title:
