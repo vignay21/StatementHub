@@ -190,14 +190,19 @@ def party_match_key(description: str) -> str:
                     if not part.isdigit() and not re.match(r"^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", part):
                         return header_key(part)
 
-    # 2. Hyphen format: UPI-..., IMPS-..., RTGS-...
+    # 2. Hyphen format: UPI-..., IMPS-..., RTGS-..., NEFT-...
     if "-" in raw:
         parts = [p.strip() for p in raw.split("-") if p.strip()]
         if len(parts) >= 2:
             p0_upper = parts[0].upper()
-            if "UPI" in p0_upper or "IMPS" in p0_upper or "RTGS" in p0_upper:
+            if "UPI" in p0_upper or "IMPS" in p0_upper or "RTGS" in p0_upper or "NEFT" in p0_upper:
                 for candidate in parts[1:]:
-                    if not candidate.isdigit() and "@" not in candidate and not re.match(r"^[A-Z]{4}0[A-Z0-9]{6}$", candidate, re.IGNORECASE):
+                    if (
+                        not candidate.isdigit()
+                        and "@" not in candidate
+                        and not re.match(r"^[A-Z]{4}0[A-Z0-9]{6}$", candidate, re.IGNORECASE)
+                        and not re.match(r"^[A-Za-z0-9]{12,24}$", candidate)
+                    ):
                         return header_key(candidate)
 
     # 3. NEFT pattern: MB NEFT Dr <ref> <PARTY> <IFSC> <acc> <remark>
@@ -331,13 +336,34 @@ def extract_identifier(row: pd.Series, reference_col: str | None, description_co
     if chq_gen:
         return chq_gen.group(1)
 
+    # 3. Dedicated NEFT / RTGS patterns:
+    # e.g. NEFT Cr-0811OP6182246121-DBSS0IN0811-NAGARJUNA MEDICAL AGENCIES-
+    #      NEFT Cr-1012i30089986601-IBKL0NEFT01-...
+    #      NEFT Cr-SIBLN26263187292-...
+    #      RTGS CR-SBIN0021370-P SUDHAKAR-K JHANSI-SBINR52026100144594496
+    neft_match = re.search(r"\b(?:NEFT|RTGS)\s+(?:Cr|Dr)[-\s/]+([A-Za-z0-9]{10,24})\b", description, re.I)
+    if neft_match:
+        candidate = neft_match.group(1).strip()
+        if candidate.upper() not in {"OTHER", "CHARGES"}:
+            return candidate
+
+    rtgs_match = re.search(r"\bRTGS\s+(?:Cr|Dr)[-\s/]+(?:[A-Za-z0-9]+[-\s/]+){1,3}([A-Za-z0-9]{16,24})\b", description, re.I)
+    if rtgs_match:
+        return rtgs_match.group(1).strip()
+
+    mb_neft = re.search(r"\b(?:mb\s+neft|neft)\s+(?:dr|cr)?\s*([A-Za-z0-9]{10,24})\b", description, re.I)
+    if mb_neft:
+        candidate = mb_neft.group(1).strip()
+        if candidate.upper() not in {"OTHER", "CHARGES", "DR", "CR"}:
+            return candidate
+
     direct = clean_text(row.get(reference_col, "")) if reference_col else ""
     # Prefer a populated cheque/reference field. ICICI's internal Tran. Id (S123...) is
     # less useful than the UPI/NEFT identifier embedded in its remarks.
     if direct and direct.lower() not in {"0", "000000000000", "nan"} and not re.fullmatch(r"[SM]\d+", direct, re.I):
         return direct
 
-    # 3. UTRs and UPI references are normally an all-numeric 12+ digit segment, or a
+    # 4. UTRs and UPI references are normally an all-numeric 12+ digit segment, or a
     # bank prefix such as IN followed by digits. Keep the complete matching segment.
     identifiers = re.findall(
         r"(?<![A-Za-z0-9])(?:CNRBH\d{8,}|IN\d{12,}|\d{12,})(?![A-Za-z0-9])",
@@ -542,7 +568,7 @@ def apply_assignments(transactions: pd.DataFrame, assignments: dict[str, Any] = 
     transactions = transactions.copy()
     if "Description" in transactions.columns:
         transactions["Party match key"] = transactions["Description"].apply(party_match_key)
-        def clean_clg_ref(row: pd.Series) -> str:
+        def refine_utr_reference(row: pd.Series) -> str:
             desc = clean_text(row.get("Description", ""))
             curr = clean_text(row.get("UTR / Reference", ""))
             if "CLG" in desc.upper() and (len(curr) > 20 or not curr):
@@ -552,9 +578,18 @@ def apply_assignments(transactions: pd.DataFrame, assignments: dict[str, Any] = 
                         return parts[2]
                     elif parts[1].isdigit():
                         return parts[1]
+            if not curr:
+                neft_match = re.search(r"\b(?:NEFT|RTGS)\s*(?:Cr|Dr)[-\s/]+([A-Za-z0-9]{10,24})\b", desc, re.I)
+                if neft_match:
+                    cand = neft_match.group(1).strip()
+                    if cand.upper() not in {"OTHER", "CHARGES"}:
+                        return cand
+                rtgs_match = re.search(r"\bRTGS\s+(?:Cr|Dr)[-\s/]+(?:[A-Za-z0-9]+[-\s/]+){1,3}([A-Za-z0-9]{16,24})\b", desc, re.I)
+                if rtgs_match:
+                    return rtgs_match.group(1).strip()
             return curr
         if "UTR / Reference" in transactions.columns:
-            transactions["UTR / Reference"] = transactions.apply(clean_clg_ref, axis=1)
+            transactions["UTR / Reference"] = transactions.apply(refine_utr_reference, axis=1)
 
     if "Party Name" not in transactions.columns:
         transactions["Party Name"] = ""
@@ -619,7 +654,10 @@ def search_transactions(transactions: pd.DataFrame, query: str, mode: str) -> pd
             return transactions[(transactions["Amount"] - amount).abs().le(0.005)].copy()
         return transactions[transactions["Amount"].astype(str).str.contains(re.escape(query), na=False)].copy()
 
-    utr_mask = transactions["UTR / Reference"].fillna("").str.contains(re.escape(query), case=False, regex=True)
+    utr_mask = (
+        transactions["UTR / Reference"].fillna("").str.contains(re.escape(query), case=False, regex=True)
+        | transactions["Description"].fillna("").str.contains(re.escape(query), case=False, regex=True)
+    )
     return transactions[utr_mask].copy()
 
 
