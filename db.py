@@ -370,3 +370,82 @@ def fetch_all_transactions(client: Client, limit: int = 50000) -> pd.DataFrame:
         return df
     except Exception:
         return pd.DataFrame()
+
+
+STORAGE_RPC_SQL = """-- Optional: Run in Supabase SQL Editor for 100% exact live disk usage
+create or replace function get_storage_stats()
+returns jsonb
+language plpgsql
+security definer
+as $$
+declare
+  total_bytes bigint;
+  table_bytes bigint;
+  txn_count bigint;
+begin
+  select pg_database_size(current_database()) into total_bytes;
+  select coalesce(pg_total_relation_size('transactions'), 0) into table_bytes;
+  select count(*) into txn_count from transactions;
+  return jsonb_build_object(
+    'database_bytes', total_bytes,
+    'table_bytes', table_bytes,
+    'txn_count', txn_count
+  );
+end;
+$$;
+"""
+
+
+def get_database_storage_stats(client: Client | None, df: pd.DataFrame | None = None) -> dict[str, Any]:
+    """Calculate and return comprehensive database storage statistics.
+
+    Checks Supabase RPC get_storage_stats if available, or calculates from table
+    metadata and row records.
+    """
+    total_quota_mb = 500.0  # Supabase Free Tier limit
+    txn_count = len(df) if df is not None and not df.empty else 0
+    table_bytes = txn_count * 350
+    db_bytes = table_bytes
+    is_exact = False
+
+    if client:
+        # 1. Try exact RPC if configured in Supabase
+        try:
+            res = client.rpc("get_storage_stats").execute()
+            if res.data and isinstance(res.data, dict):
+                db_bytes = int(res.data.get("database_bytes", 0))
+                table_bytes = int(res.data.get("table_bytes", table_bytes))
+                txn_count = int(res.data.get("txn_count", txn_count))
+                is_exact = True
+        except Exception:
+            pass
+
+        # 2. If count is 0, query exact table count from Supabase
+        if txn_count == 0 and not is_exact:
+            try:
+                cnt_res = client.table("transactions").select("id", count="exact").limit(1).execute()
+                if cnt_res.count is not None:
+                    txn_count = cnt_res.count
+                    table_bytes = txn_count * 350
+                    db_bytes = table_bytes
+            except Exception:
+                pass
+
+    table_mb = table_bytes / (1024 * 1024)
+    used_mb = (db_bytes / (1024 * 1024)) if is_exact else table_mb
+    free_mb = max(0.0, total_quota_mb - used_mb)
+    used_pct = min(100.0, (used_mb / total_quota_mb) * 100)
+    remaining_txns = int((free_mb * 1024 * 1024) / 350)
+
+    return {
+        "is_connected": bool(client),
+        "is_exact": is_exact,
+        "txn_count": txn_count,
+        "table_bytes": table_bytes,
+        "table_mb": round(table_mb, 2),
+        "used_mb": round(used_mb, 2),
+        "free_mb": round(free_mb, 2),
+        "total_quota_mb": total_quota_mb,
+        "used_pct": round(used_pct, 2),
+        "remaining_txns": remaining_txns,
+    }

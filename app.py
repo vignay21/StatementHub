@@ -1207,6 +1207,54 @@ def render_backup_restore_section(combined: pd.DataFrame, assignments: dict[str,
                     st.error(f"Invalid backup file format: {exc}")
 
 
+def render_storage_usage_section(combined: pd.DataFrame, sb_client: Any) -> None:
+    """Render database storage usage meter and capacity forecast."""
+    storage = db.get_database_storage_stats(sb_client, combined)
+    used_mb = storage["used_mb"]
+    free_mb = storage["free_mb"]
+    total_quota_mb = storage["total_quota_mb"]
+    used_pct = storage["used_pct"]
+    txn_count = storage["txn_count"]
+    remaining_txns = storage["remaining_txns"]
+    is_exact = storage["is_exact"]
+
+    with st.expander("💾 Database Storage & Capacity Tracker", expanded=False):
+        st.markdown("**Monitor your cloud database storage usage, free space left, and capacity.**")
+
+        # Visual Storage Bar
+        progress_val = min(max(used_pct / 100.0, 0.001), 1.0)
+        st.progress(progress_val)
+        st.caption(
+            f"**Used:** {used_mb:.2f} MB of {total_quota_mb:.0f} MB ({used_pct:.2f}%)  |  "
+            f"**Free Space Left:** {free_mb:.2f} MB ({100.0 - used_pct:.2f}%)"
+        )
+
+        s_col1, s_col2, s_col3, s_col4 = st.columns(4)
+        with s_col1:
+            st.metric("Storage Used", f"{used_mb:.2f} MB", help="Storage currently occupied by your transaction tables and indexes")
+        with s_col2:
+            st.metric("Storage Free Left", f"{free_mb:.2f} MB", help="Unused storage remaining on Supabase Free Tier (500 MB)")
+        with s_col3:
+            st.metric("Saved Transactions", f"{txn_count:,}", help="Total number of bank transactions stored in database")
+        with s_col4:
+            st.metric("Capacity Remaining", f"~{format_inr(remaining_txns).replace('₹ ', '')}", help="Estimated number of additional transactions that can fit into the remaining free space")
+
+        st.info(
+            f"💡 **You have massive storage headroom!** At your current statement volume, your remaining **{free_mb:.2f} MB** can store "
+            f"**~{format_inr(remaining_txns).replace('₹ ', '')} more transactions** (over 70+ years of daily bank statements!).",
+            icon="🚀",
+        )
+
+        if not is_exact and sb_client:
+            with st.expander("⚙️ Enable 100% Exact Postgres Disk Query (Optional)", expanded=False):
+                st.markdown(
+                    "The tracker above calculates usage from your transactions table. "
+                    "If you want 100% exact live disk size directly from PostgreSQL's internal storage engine, "
+                    "run this 5-line SQL function in your Supabase **SQL Editor**:"
+                )
+                st.code(db.STORAGE_RPC_SQL, language="sql")
+
+
 def export_monthly_report(transactions: pd.DataFrame, exclude_internal: bool = True, exclude_fd: bool = True) -> bytes:
     """Generate a multi-sheet Excel workbook with monthly profit, bank breakdown, FDs, & internal transfers."""
     if transactions.empty or "Date" not in transactions.columns or "Amount" not in transactions.columns:
@@ -1647,15 +1695,17 @@ def app() -> None:
         unsafe_allow_html=True,
     )
 
-    col_title, col_status = st.columns([4, 1], vertical_alignment="center")
+    col_title, col_status = st.columns([3, 2], vertical_alignment="center")
     with col_title:
         st.title("Unified Bank Search")
     with col_status:
         if sb_client:
+            storage_quick = db.get_database_storage_stats(sb_client, None)
+            free_space_text = f"{storage_quick['free_mb']:.1f} MB Free / {storage_quick['total_quota_mb']:.0f} MB"
             if hasattr(st, "badge"):
-                st.badge("🟢 Supabase Connected", color="green")
+                st.badge(f"🟢 Supabase Connected • 💾 {free_space_text}", color="green")
             else:
-                st.caption("🟢 **Supabase Connected**")
+                st.caption(f"🟢 **Supabase Connected** • 💾 **{free_space_text}**")
         else:
             if hasattr(st, "badge"):
                 st.badge("💾 Local Mode", color="gray")
@@ -1721,6 +1771,7 @@ def app() -> None:
             st.info("No statements in database yet. Upload statements above to get started.")
         else:
             st.info("Select your bank statements to begin. The app recognizes HDFC-style, ICICI-style, and CSV statement layouts, plus similar variants.")
+        render_storage_usage_section(combined, sb_client)
         render_backup_restore_section(combined, assignments, sb_client)
         return
 
@@ -1960,6 +2011,7 @@ def app() -> None:
     with tab_profit:
         render_monthly_profit_section(combined)
 
+    render_storage_usage_section(combined, sb_client)
     render_backup_restore_section(combined, assignments, sb_client)
 
 

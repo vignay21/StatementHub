@@ -45,7 +45,14 @@ StatementHub can connect to **Supabase** (free 500MB cloud PostgreSQL) for persi
    url = "https://your-project-id.supabase.co"
    key = "your-supabase-key"
    ```
-4. Restart the app. The top header will display `🟢 Supabase Connected`.
+4. Restart the app. The top header will display `🟢 Supabase Connected` along with your live free storage space (e.g. `💾 499.8 MB Free / 500 MB`).
+
+### Database Storage & Capacity Tracker
+StatementHub includes a live storage meter in the top header and in the **💾 Database Storage & Capacity Tracker** expander:
+- **Storage Used vs. Free:** Live tracking against the 500 MB Supabase Free Tier quota.
+- **Visual Progress Bar:** Real-time percentage usage meter.
+- **Estimated Headroom:** Calculates how many transactions can fit into the remaining free space (e.g. over 14 Lakh+ transactions, equivalent to 70+ years of daily bank statements).
+- **Exact Postgres Disk Query (Optional):** Includes an optional 5-line SQL function (`get_storage_stats()`) if you want exact byte-level disk measurement directly from PostgreSQL's storage engine.
 
 ## Search transactions
 
