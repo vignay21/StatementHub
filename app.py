@@ -1245,14 +1245,21 @@ def render_storage_usage_section(combined: pd.DataFrame, sb_client: Any) -> None
             icon="🚀",
         )
 
-        if not is_exact and sb_client:
-            with st.expander("⚙️ Enable 100% Exact Postgres Disk Query (Optional)", expanded=False):
-                st.markdown(
-                    "The tracker above calculates usage from your transactions table. "
-                    "If you want 100% exact live disk size directly from PostgreSQL's internal storage engine, "
-                    "run this 5-line SQL function in your Supabase **SQL Editor**:"
-                )
-                st.code(db.STORAGE_RPC_SQL, language="sql")
+        b_col, _ = st.columns([2.5, 3.5])
+        with b_col:
+            if st.button("🔄 Refresh Live Database Storage", key="refresh_db_storage_btn", use_container_width=True):
+                if sb_client:
+                    refreshed = db.fetch_all_transactions(sb_client)
+                    st.session_state["cached_transactions"] = refreshed
+                    latest = db.get_database_storage_stats(sb_client, refreshed)
+                    st.toast(
+                        f"Live database refreshed: {latest['txn_count']:,} transactions | "
+                        f"{latest['used_mb']:.2f} MB used | {latest['free_mb']:.2f} MB free.",
+                        icon="💾",
+                    )
+                else:
+                    st.toast("Running in local mode.", icon="💾")
+                st.rerun()
 
 
 def export_monthly_report(transactions: pd.DataFrame, exclude_internal: bool = True, exclude_fd: bool = True) -> bytes:
@@ -1700,7 +1707,8 @@ def app() -> None:
         st.title("Unified Bank Search")
     with col_status:
         if sb_client:
-            storage_quick = db.get_database_storage_stats(sb_client, None)
+            cached_txns = st.session_state.get("cached_transactions", pd.DataFrame())
+            storage_quick = db.get_database_storage_stats(sb_client, cached_txns if not cached_txns.empty else None)
             free_space_text = f"{storage_quick['free_mb']:.1f} MB Free / {storage_quick['total_quota_mb']:.0f} MB"
             if hasattr(st, "badge"):
                 st.badge(f"🟢 Supabase Connected • 💾 {free_space_text}", color="green")

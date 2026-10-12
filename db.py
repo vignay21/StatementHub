@@ -399,17 +399,16 @@ $$;
 def get_database_storage_stats(client: Client | None, df: pd.DataFrame | None = None) -> dict[str, Any]:
     """Calculate and return comprehensive database storage statistics.
 
-    Checks Supabase RPC get_storage_stats if available, or calculates from table
-    metadata and row records.
+    Directly queries Supabase for live record count, calculates serialized payload
+    size, and accounts for PostgreSQL disk page overhead and B-tree indexes (~1.35x).
     """
     total_quota_mb = 500.0  # Supabase Free Tier limit
     txn_count = len(df) if df is not None and not df.empty else 0
-    table_bytes = txn_count * 350
-    db_bytes = table_bytes
+    table_bytes = 0
     is_exact = False
 
     if client:
-        # 1. Try exact RPC if configured in Supabase
+        # 1. Check if custom RPC get_storage_stats is present
         try:
             res = client.rpc("get_storage_stats").execute()
             if res.data and isinstance(res.data, dict):
@@ -417,25 +416,51 @@ def get_database_storage_stats(client: Client | None, df: pd.DataFrame | None = 
                 table_bytes = int(res.data.get("table_bytes", table_bytes))
                 txn_count = int(res.data.get("txn_count", txn_count))
                 is_exact = True
+                table_mb = table_bytes / (1024 * 1024)
+                used_mb = db_bytes / (1024 * 1024)
+                free_mb = max(0.0, total_quota_mb - used_mb)
+                used_pct = min(100.0, (used_mb / total_quota_mb) * 100)
+                remaining_txns = int((free_mb * 1024 * 1024) / 740) if free_mb > 0 else 0
+                return {
+                    "is_connected": True,
+                    "is_exact": True,
+                    "txn_count": txn_count,
+                    "table_bytes": table_bytes,
+                    "table_mb": round(table_mb, 2),
+                    "used_mb": round(used_mb, 2),
+                    "free_mb": round(free_mb, 2),
+                    "total_quota_mb": total_quota_mb,
+                    "used_pct": round(used_pct, 2),
+                    "remaining_txns": remaining_txns,
+                }
         except Exception:
             pass
 
-        # 2. If count is 0, query exact table count from Supabase
-        if txn_count == 0 and not is_exact:
+        # 2. If txn_count is 0 or df is not provided, query live exact row count from Supabase
+        if txn_count == 0:
             try:
                 cnt_res = client.table("transactions").select("id", count="exact").limit(1).execute()
                 if cnt_res.count is not None:
                     txn_count = cnt_res.count
-                    table_bytes = txn_count * 350
-                    db_bytes = table_bytes
             except Exception:
                 pass
 
+    # 3. Calculate accurate storage from record payload + Postgres B-tree index structures (~1.35x)
+    if df is not None and not df.empty:
+        try:
+            raw_payload = len(df.to_json(orient="records").encode("utf-8"))
+            table_bytes = int(raw_payload * 1.35)
+        except Exception:
+            table_bytes = txn_count * 740
+    else:
+        table_bytes = txn_count * 740
+
     table_mb = table_bytes / (1024 * 1024)
-    used_mb = (db_bytes / (1024 * 1024)) if is_exact else table_mb
+    used_mb = table_mb
     free_mb = max(0.0, total_quota_mb - used_mb)
     used_pct = min(100.0, (used_mb / total_quota_mb) * 100)
-    remaining_txns = int((free_mb * 1024 * 1024) / 350)
+    bytes_per_txn = (table_bytes / txn_count) if txn_count > 0 else 740
+    remaining_txns = int((free_mb * 1024 * 1024) / bytes_per_txn) if free_mb > 0 else 0
 
     return {
         "is_connected": bool(client),

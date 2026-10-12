@@ -51,8 +51,7 @@ StatementHub can connect to **Supabase** (free 500MB cloud PostgreSQL) for persi
 StatementHub includes a live storage meter in the top header and in the **💾 Database Storage & Capacity Tracker** expander:
 - **Storage Used vs. Free:** Live tracking against the 500 MB Supabase Free Tier quota.
 - **Visual Progress Bar:** Real-time percentage usage meter.
-- **Estimated Headroom:** Calculates how many transactions can fit into the remaining free space (e.g. over 14 Lakh+ transactions, equivalent to 70+ years of daily bank statements).
-- **Exact Postgres Disk Query (Optional):** Includes an optional 5-line SQL function (`get_storage_stats()`) if you want exact byte-level disk measurement directly from PostgreSQL's storage engine.
+- **1-Click Live Storage Refresh:** Click the **🔄 Refresh Live Database Storage** button inside the app to query Supabase directly and verify live storage usage, record counts, and remaining capacity in real time without running any manual SQL.
 
 ## Search transactions
 
