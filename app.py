@@ -6,6 +6,7 @@ Run with: streamlit run app.py
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import io
 import json
@@ -58,7 +59,12 @@ class ImportedStatement:
 def clean_text(value: Any) -> str:
     if value is None or pd.isna(value):
         return ""
-    return re.sub(r"\s+", " ", str(value)).strip()
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    if text.startswith('="') and text.endswith('"'):
+        text = text[2:-1].strip()
+    elif text.startswith("="):
+        text = text[1:].strip().strip('"\'')
+    return text
 
 
 def format_inr(val: Any, prefix: str = "₹ ") -> str:
@@ -301,19 +307,39 @@ def infer_bank(filename: str, raw: pd.DataFrame, header_row: int) -> str:
 def read_statement(source: Any, filename: str) -> pd.DataFrame:
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
-        # Indian bank exports are commonly UTF-8, UTF-8 with BOM, or Windows-1252.
+        # Indian bank exports are commonly UTF-8, UTF-8 with BOM, Windows-1252, or Latin-1.
         data = source.getvalue() if hasattr(source, "getvalue") else Path(source).read_bytes()
-        for encoding in ("utf-8-sig", "utf-8", "cp1252"):
+        for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
             try:
-                return pd.read_csv(io.BytesIO(data), header=None, dtype=object, encoding=encoding, engine="python")
-            except UnicodeDecodeError:
+                text = data.decode(encoding)
+                reader = csv.reader(io.StringIO(text))
+                rows = list(reader)
+                if not rows:
+                    return pd.DataFrame()
+                max_cols = max(len(r) for r in rows)
+                padded = []
+                for r in rows:
+                    cleaned_row = [clean_text(cell) for cell in r]
+                    cleaned_row.extend([""] * (max_cols - len(cleaned_row)))
+                    padded.append(cleaned_row)
+                return pd.DataFrame(padded, dtype=object)
+            except (UnicodeDecodeError, csv.Error):
+                continue
+            except Exception:
                 continue
         raise ValueError("Could not decode the CSV file.")
     if suffix not in {".xls", ".xlsx"}:
         raise ValueError("Only .csv, .xls, and .xlsx statements are supported.")
-    engine = "xlrd" if suffix == ".xls" else "openpyxl"
     data = source.getvalue() if hasattr(source, "getvalue") else Path(source).read_bytes()
-    return pd.read_excel(io.BytesIO(data), header=None, dtype=object, engine=engine)
+    primary_engine = "openpyxl" if suffix == ".xlsx" else "xlrd"
+    fallback_engine = "xlrd" if primary_engine == "openpyxl" else "openpyxl"
+    try:
+        return pd.read_excel(io.BytesIO(data), header=None, dtype=object, engine=primary_engine)
+    except Exception:
+        try:
+            return pd.read_excel(io.BytesIO(data), header=None, dtype=object, engine=fallback_engine)
+        except Exception:
+            raise
 
 
 def extract_identifier(row: pd.Series, reference_col: str | None, description_col: str | None) -> str:
@@ -398,7 +424,7 @@ def normalize_statement(source: Any, filename: str) -> ImportedStatement:
 
     records: list[dict[str, Any]] = []
     for _, row in data.iterrows():
-        date_value = pd.to_datetime(row.get(date_col), errors="coerce", dayfirst=True)
+        date_value = pd.to_datetime(clean_text(row.get(date_col)), errors="coerce", dayfirst=True)
         debit = parse_amount(row.get(debit_col)) if debit_col else None
         credit = parse_amount(row.get(credit_col)) if credit_col else None
         description = clean_text(row.get(description_col))

@@ -62,7 +62,12 @@ create table if not exists party_mappings (
 def clean_str(val: Any) -> str:
     if val is None or pd.isna(val):
         return ""
-    return re.sub(r"\s+", " ", str(val)).strip()
+    text = re.sub(r"\s+", " ", str(val)).strip()
+    if text.startswith('="') and text.endswith('"'):
+        text = text[2:-1].strip()
+    elif text.startswith("="):
+        text = text[1:].strip().strip('"\'')
+    return text
 
 
 def compute_transaction_fingerprint(row: dict[str, Any]) -> str:
