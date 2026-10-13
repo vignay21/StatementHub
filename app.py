@@ -1456,8 +1456,10 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
     valid["DateTime"] = dates[~dates.isna()]
     valid["YearMonth"] = valid["DateTime"].dt.strftime("%Y-%m")
     valid["Month"] = valid["DateTime"].dt.strftime("%B %Y")
-    valid["Is_Internal"] = detect_internal_transfers(valid)
-    valid["Is_FD"] = detect_fd_investments(valid)
+    if "Is_Internal" not in valid.columns:
+        valid["Is_Internal"] = detect_internal_transfers(valid)
+    if "Is_FD" not in valid.columns:
+        valid["Is_FD"] = detect_fd_investments(valid)
 
     # Calculate internal transfers sum
     int_dr = float(valid.loc[valid["Is_Internal"] & (valid["Type"] == "Debit"), "Amount"].sum())
@@ -1843,6 +1845,8 @@ def app() -> None:
         return
 
     combined = apply_assignments(combined, assignments)
+    combined["Is_Internal"] = detect_internal_transfers(combined)
+    combined["Is_FD"] = detect_fd_investments(combined)
 
     tab_search, tab_profit = st.tabs(["🔎 Unified Transaction Search", "💰 Monthly Profit & Cash Flow"])
 
@@ -1902,8 +1906,8 @@ def app() -> None:
                 filtered_df = filtered_df[mask].copy()
 
         # Quick Cash Flow Ribbon on search screen (with contra & FD detection)
-        is_internal_filtered = detect_internal_transfers(filtered_df)
-        is_fd_filtered = detect_fd_investments(filtered_df)
+        is_internal_filtered = filtered_df["Is_Internal"] if "Is_Internal" in filtered_df.columns else detect_internal_transfers(filtered_df)
+        is_fd_filtered = filtered_df["Is_FD"] if "Is_FD" in filtered_df.columns else detect_fd_investments(filtered_df)
         biz_filtered = filtered_df[(~is_internal_filtered) & (~is_fd_filtered)]
         rec_sum = float(biz_filtered.loc[biz_filtered["Type"] == "Credit", "Amount"].sum()) if not biz_filtered.empty else 0.0
         sent_sum = float(biz_filtered.loc[biz_filtered["Type"] == "Debit", "Amount"].sum()) if not biz_filtered.empty else 0.0
@@ -1974,8 +1978,8 @@ def app() -> None:
         inject_party_autocomplete(stored_party_names)
 
         results = results.reset_index(drop=True)
-        results["Self Transfer"] = detect_internal_transfers(results)
-        results["FD / Investment"] = detect_fd_investments(results)
+        results["Self Transfer"] = results["Is_Internal"] if "Is_Internal" in results.columns else detect_internal_transfers(results)
+        results["FD / Investment"] = results["Is_FD"] if "Is_FD" in results.columns else detect_fd_investments(results)
 
         if "editor_version" not in st.session_state:
             st.session_state.editor_version = 0
