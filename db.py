@@ -276,6 +276,10 @@ def save_transaction_override(client: Client, fingerprint: str, party_name: str)
 def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int, int]:
     """Insert new transactions into Supabase, automatically skipping duplicates.
 
+    Uses a two-layer deduplication check:
+    1. SHA-256 transaction fingerprint.
+    2. Bank + Date + Amount + Type + UTR signature (when UTR is non-empty).
+
     Returns (new_inserted_count, duplicates_skipped_count).
     """
     if df.empty:
@@ -283,10 +287,14 @@ def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int,
 
     records: list[dict[str, Any]] = []
     fingerprints: list[str] = []
+    valid_utrs: list[str] = []
 
     for _, row in df.iterrows():
         fp = row.get("fingerprint") or compute_transaction_fingerprint(row.to_dict())
         fingerprints.append(fp)
+        utr_val = clean_str(row.get("UTR / Reference"))
+        if utr_val:
+            valid_utrs.append(utr_val)
         records.append({
             "fingerprint": fp,
             "bank": clean_str(row.get("Bank")),
@@ -295,13 +303,13 @@ def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int,
             "party_name": clean_str(row.get("Party Name")),
             "amount": float(row.get("Amount", 0)) if row.get("Amount") is not None and not pd.isna(row.get("Amount")) else 0.0,
             "type": clean_str(row.get("Type")),
-            "utr": clean_str(row.get("UTR / Reference")),
+            "utr": utr_val,
             "balance": float(row.get("Balance")) if row.get("Balance") is not None and not pd.isna(row.get("Balance")) else None,
             "party_match_key": clean_str(row.get("Party match key")),
             "source_file": clean_str(row.get("Source file")),
         })
 
-    # Query existing fingerprints in Supabase (in chunks of 200)
+    # Layer 1: Query existing fingerprints in Supabase (in chunks of 200)
     existing_fps: set[str] = set()
     chunk_size = 200
     for i in range(0, len(fingerprints), chunk_size):
@@ -313,7 +321,34 @@ def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int,
         except Exception:
             pass
 
-    to_insert = [r for r in records if r["fingerprint"] not in existing_fps]
+    # Layer 2: Query existing (bank, date, amount, type, utr) for populated UTRs
+    existing_utr_keys: set[tuple[str, str, float, str, str]] = set()
+    if valid_utrs:
+        for i in range(0, len(valid_utrs), chunk_size):
+            u_chunk = valid_utrs[i:i + chunk_size]
+            try:
+                res = client.table("transactions").select("bank, date, amount, type, utr").in_("utr", u_chunk).execute()
+                for item in res.data:
+                    existing_utr_keys.add((
+                        clean_str(item.get("bank")),
+                        clean_str(item.get("date")),
+                        float(item.get("amount", 0)),
+                        clean_str(item.get("type")),
+                        clean_str(item.get("utr")),
+                    ))
+            except Exception:
+                pass
+
+    to_insert = []
+    for r in records:
+        if r["fingerprint"] in existing_fps:
+            continue
+        if r["utr"]:
+            key = (r["bank"], r["date"], r["amount"], r["type"], r["utr"])
+            if key in existing_utr_keys:
+                continue
+        to_insert.append(r)
+
     skipped_count = len(records) - len(to_insert)
 
     if to_insert:
