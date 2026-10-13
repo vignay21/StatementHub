@@ -124,7 +124,14 @@ def detect_internal_transfers(data: pd.DataFrame) -> pd.Series:
         if contra_utrs:
             utr_mask = data["UTR / Reference"].isin(contra_utrs)
 
-    return party_mask | utr_mask
+    # 3. Description keyword condition (e.g. 'SELF TRANSFER', 'TRANSFER TO SELF', 'OWN A/C')
+    desc_str = data["Description"].fillna("").astype(str).str.strip().str.lower()
+    desc_mask = desc_str.str.contains(
+        r"\bself\s*transfer\b|\btransfer\s+to\s+self\b|\bown\s+acc(?:ount)?\b|\bto\s+own\s+a/?c\b",
+        regex=True,
+    )
+
+    return party_mask | utr_mask | desc_mask
 
 
 def detect_fd_investments(data: pd.DataFrame) -> pd.Series:
