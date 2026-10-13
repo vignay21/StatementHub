@@ -390,13 +390,29 @@ def extract_identifier(row: pd.Series, reference_col: str | None, description_co
         if candidate.upper() not in {"OTHER", "CHARGES", "DR", "CR"}:
             return candidate
 
+    # 4. Dedicated IMPS patterns:
+    # Format A: Canara Bank INET-IMPS / MOB-IMPS ending with /<12-digit RRN>
+    # e.g. INET-IMPS-CR/LAKSHMI DE/ICICI Bank/749205003098/LAKSHMIDEV/7989518305/11/10/2026 18:59:37/628418647914
+    if "IMPS" in description.upper():
+        imps_end = re.search(r"/(?:[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}\s+[0-9:]+/)?([0-9]{12})$", description)
+        if imps_end:
+            return imps_end.group(1)
+        # Format B: ICICI Bank MMT/IMPS/<12-digit RRN>/...
+        imps_mmt = re.search(r"\bMMT/IMPS/([0-9]{12})\b", description, re.I)
+        if imps_mmt:
+            return imps_mmt.group(1)
+        # Format C: General IMPS-<12-digit RRN>...
+        imps_gen = re.search(r"\bIMPS[-\s/]+([0-9]{12})\b", description, re.I)
+        if imps_gen:
+            return imps_gen.group(1)
+
     direct = clean_text(row.get(reference_col, "")) if reference_col else ""
     # Prefer a populated cheque/reference field. ICICI's internal Tran. Id (S123...) is
     # less useful than the UPI/NEFT identifier embedded in its remarks.
     if direct and direct.lower() not in {"0", "000000000000", "nan"} and not re.fullmatch(r"[SM]\d+", direct, re.I):
         return direct
 
-    # 4. UTRs and UPI references are normally an all-numeric 12+ digit segment, or a
+    # 5. UTRs and UPI references are normally an all-numeric 12+ digit segment, or a
     # bank prefix such as IN followed by digits. Keep the complete matching segment.
     identifiers = re.findall(
         r"(?<![A-Za-z0-9])(?:CNRBH\d{8,}|IN\d{12,}|\d{12,})(?![A-Za-z0-9])",
@@ -611,6 +627,16 @@ def apply_assignments(transactions: pd.DataFrame, assignments: dict[str, Any] = 
                         return parts[2]
                     elif parts[1].isdigit():
                         return parts[1]
+            if "IMPS" in desc.upper():
+                imps_end = re.search(r"/(?:[0-9]{1,2}/[0-9]{1,2}/[0-9]{2,4}\s+[0-9:]+/)?([0-9]{12})$", desc)
+                if imps_end:
+                    return imps_end.group(1)
+                imps_mmt = re.search(r"\bMMT/IMPS/([0-9]{12})\b", desc, re.I)
+                if imps_mmt:
+                    return imps_mmt.group(1)
+                imps_gen = re.search(r"\bIMPS[-\s/]+([0-9]{12})\b", desc, re.I)
+                if imps_gen:
+                    return imps_gen.group(1)
             if not curr:
                 neft_match = re.search(r"\b(?:NEFT|RTGS)\s*(?:Cr|Dr)[-\s/]+([A-Za-z0-9]{10,24})\b", desc, re.I)
                 if neft_match:
