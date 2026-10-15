@@ -691,6 +691,20 @@ def export_excel(transactions: pd.DataFrame) -> bytes:
     return output.getvalue()
 
 
+def sort_dataframe_by_date(df: pd.DataFrame, ascending: bool = False) -> pd.DataFrame:
+    """Sort a DataFrame chronologically by its 'Date' column (%d-%m-%Y)."""
+    if df.empty or "Date" not in df.columns:
+        return df.copy() if hasattr(df, "copy") else df
+    parsed_dates = pd.to_datetime(df["Date"], format="%d-%m-%Y", errors="coerce")
+    if parsed_dates.isna().any():
+        fallback = pd.to_datetime(df.loc[parsed_dates.isna(), "Date"], dayfirst=True, errors="coerce")
+        parsed_dates = parsed_dates.fillna(fallback)
+    order = parsed_dates.argsort(kind="mergesort")
+    if not ascending:
+        order = order[::-1]
+    return df.iloc[order].reset_index(drop=True)
+
+
 def search_transactions(transactions: pd.DataFrame, query: str, mode: str) -> pd.DataFrame:
     """Search exactly one selected category: UTR/reference, date, or amount."""
     query = clean_text(query)
@@ -1390,14 +1404,16 @@ def export_monthly_report(transactions: pd.DataFrame, exclude_internal: bool = T
     b_export = b_grp.sort_values(["YearMonth", "Bank"], ascending=[False, True]).drop(columns=["YearMonth"], errors="ignore")
 
     # Fixed Deposits & Investments Sheet
-    fd_df = valid[valid["Is_FD"]][
-        ["Date", "Bank", "Type", "Amount", "UTR / Reference", "Description", "Party Name"]
-    ].copy()
+    fd_df = sort_dataframe_by_date(
+        valid[valid["Is_FD"]][["Date", "Bank", "Type", "Amount", "UTR / Reference", "Description", "Party Name"]].copy(),
+        ascending=False,
+    )
 
     # Internal Transfers Sheet
-    internal_df = valid[valid["Is_Internal"]][
-        ["Date", "Bank", "Type", "Amount", "UTR / Reference", "Description", "Party Name"]
-    ].copy()
+    internal_df = sort_dataframe_by_date(
+        valid[valid["Is_Internal"]][["Date", "Bank", "Type", "Amount", "UTR / Reference", "Description", "Party Name"]].copy(),
+        ascending=False,
+    )
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -1712,8 +1728,21 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
             fd_display = valid[valid["Is_FD"]][
                 ["Date", "Bank", "Type", "Amount", "UTR / Reference", "Description", "Party Name"]
             ].copy()
-            fd_display["Amount"] = fd_display["Amount"].apply(format_inr)
-            st.dataframe(fd_display, use_container_width=True, hide_index=True)
+            fd_display = sort_dataframe_by_date(fd_display, ascending=False)
+            parsed_fd_dates = pd.to_datetime(fd_display["Date"], format="%d-%m-%Y", errors="coerce")
+            if parsed_fd_dates.isna().any():
+                fallback = pd.to_datetime(fd_display.loc[parsed_fd_dates.isna(), "Date"], dayfirst=True, errors="coerce")
+                parsed_fd_dates = parsed_fd_dates.fillna(fallback)
+            fd_display["Date"] = parsed_fd_dates.dt.date
+            st.dataframe(
+                fd_display,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Date": st.column_config.DateColumn("Date", format="DD-MM-YYYY", help="Transaction date (click to sort chronologically)"),
+                    "Amount": st.column_config.NumberColumn(format="₹ %0.2f"),
+                },
+            )
 
     # 5. View Detected Self-Transfers Expander
     if total_internal > 0:
@@ -1722,8 +1751,21 @@ def render_monthly_profit_section(combined: pd.DataFrame) -> None:
             self_display = valid[valid["Is_Internal"]][
                 ["Date", "Bank", "Type", "Amount", "UTR / Reference", "Description", "Party Name"]
             ].copy()
-            self_display["Amount"] = self_display["Amount"].apply(format_inr)
-            st.dataframe(self_display, use_container_width=True, hide_index=True)
+            self_display = sort_dataframe_by_date(self_display, ascending=False)
+            parsed_self_dates = pd.to_datetime(self_display["Date"], format="%d-%m-%Y", errors="coerce")
+            if parsed_self_dates.isna().any():
+                fallback = pd.to_datetime(self_display.loc[parsed_self_dates.isna(), "Date"], dayfirst=True, errors="coerce")
+                parsed_self_dates = parsed_self_dates.fillna(fallback)
+            self_display["Date"] = parsed_self_dates.dt.date
+            st.dataframe(
+                self_display,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Date": st.column_config.DateColumn("Date", format="DD-MM-YYYY", help="Transaction date (click to sort chronologically)"),
+                    "Amount": st.column_config.NumberColumn(format="₹ %0.2f"),
+                },
+            )
 
     # 6. Download Report
     report_bytes = export_monthly_report(df, exclude_internal=exclude_internal, exclude_fd=exclude_fd)
@@ -1847,12 +1889,13 @@ def app() -> None:
     combined = apply_assignments(combined, assignments)
     combined["Is_Internal"] = detect_internal_transfers(combined)
     combined["Is_FD"] = detect_fd_investments(combined)
+    combined = sort_dataframe_by_date(combined, ascending=False)
 
     tab_search, tab_profit = st.tabs(["🔎 Unified Transaction Search", "💰 Monthly Profit & Cash Flow"])
 
     with tab_search:
-        # Filters: Bank Account & Time Period
-        filter_col1, filter_col2 = st.columns(2)
+        # Filters: Bank Account, Time Period & Chronological Sorting
+        filter_col1, filter_col2, filter_col3 = st.columns([1.5, 1.5, 1.2])
         with filter_col1:
             all_banks = ["All Banks"] + sorted([b for b in combined["Bank"].dropna().unique().tolist() if b])
             selected_bank = st.selectbox("Bank Account", options=all_banks, index=0)
@@ -1865,6 +1908,13 @@ def app() -> None:
                 "Custom Date Range",
             ]
             selected_period = st.selectbox("Period", options=period_options, index=0)
+        with filter_col3:
+            sort_order = st.selectbox(
+                "Sort by Date",
+                options=["Newest First (Latest)", "Oldest First"],
+                index=0,
+                help="Order transactions chronologically by date",
+            )
 
         custom_start_date = None
         custom_end_date = None
@@ -1963,6 +2013,7 @@ def app() -> None:
             ).strip()
 
         results = search_transactions(filtered_df, effective_query, mode)
+        results = sort_dataframe_by_date(results, ascending=(sort_order == "Oldest First"))
 
         result_ids = results[results["UTR / Reference"] != ""]["UTR / Reference"]
         duplicated = result_ids[result_ids.duplicated(keep=False)].unique().tolist()
@@ -1971,7 +2022,7 @@ def app() -> None:
         stored_party_names = load_stored_party_names(sb_client, combined)
 
         st.subheader(f"Results ({len(results):,})")
-        st.caption("💡 Click on any transaction's **Party Name** cell to enter party name (matching saved names will appear while typing).")
+        st.caption("💡 Click on any transaction's **Party Name** cell to enter party name (matching saved names will appear while typing). Click the **Date** column header to sort chronologically.")
 
         render_bank_color_legend(results)
 
@@ -1991,7 +2042,14 @@ def app() -> None:
             "UTR / Reference", "Balance", "Self Transfer", "FD / Investment", "Duplicate UTR",
         ]
 
-        styled_results = style_table_by_bank(results[display_columns])
+        display_df = results[display_columns].copy()
+        parsed_disp_dates = pd.to_datetime(display_df["Date"], format="%d-%m-%Y", errors="coerce")
+        if parsed_disp_dates.isna().any():
+            fallback = pd.to_datetime(display_df.loc[parsed_disp_dates.isna(), "Date"], dayfirst=True, errors="coerce")
+            parsed_disp_dates = parsed_disp_dates.fillna(fallback)
+        display_df["Date"] = parsed_disp_dates.dt.date
+
+        styled_results = style_table_by_bank(display_df)
 
         edited_results = st.data_editor(
             styled_results,
@@ -2001,6 +2059,11 @@ def app() -> None:
             key=editor_key,
             column_config={
                 "Bank": st.column_config.TextColumn("Bank", help="Transaction rows are color-coded by Bank"),
+                "Date": st.column_config.DateColumn(
+                    "Date",
+                    format="DD-MM-YYYY",
+                    help="Transaction date (click column header to sort chronologically)",
+                ),
                 "Amount": st.column_config.NumberColumn(format="₹ %0.2f"),
                 "Balance": st.column_config.NumberColumn(format="₹ %0.2f"),
                 "Self Transfer": st.column_config.CheckboxColumn("Self Transfer", help="Detected internal transfer between your own accounts"),
@@ -2016,11 +2079,7 @@ def app() -> None:
         edited_rows = editor_state.get("edited_rows", {})
 
         changes_to_apply: dict[int, str] = {}
-        if edited_rows:
-            for idx_raw, col_edits in edited_rows.items():
-                if "Party Name" in col_edits:
-                    changes_to_apply[int(idx_raw)] = clean_text(col_edits["Party Name"])
-        else:
+        if not edited_results.empty and "Party Name" in edited_results.columns:
             diff = (
                 edited_results["Party Name"].fillna("").astype(str).str.strip()
                 != results["Party Name"].fillna("").astype(str).str.strip()
@@ -2028,6 +2087,11 @@ def app() -> None:
             if diff.any():
                 for idx in results.index[diff]:
                     changes_to_apply[int(idx)] = clean_text(edited_results.loc[idx, "Party Name"])
+
+        if not changes_to_apply and edited_rows:
+            for idx_raw, col_edits in edited_rows.items():
+                if "Party Name" in col_edits:
+                    changes_to_apply[int(idx_raw)] = clean_text(col_edits["Party Name"])
 
         if changes_to_apply:
             updated_count = 0
