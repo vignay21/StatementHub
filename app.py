@@ -1931,6 +1931,9 @@ def app() -> None:
 
         if selected_period != "All Time" and not filtered_df.empty:
             parsed_dates = pd.to_datetime(filtered_df["Date"], format="%d-%m-%Y", errors="coerce")
+            if parsed_dates.isna().any():
+                fallback = pd.to_datetime(filtered_df.loc[parsed_dates.isna(), "Date"], dayfirst=True, errors="coerce")
+                parsed_dates = parsed_dates.fillna(fallback)
             valid_dates = parsed_dates.dropna()
             ref_date = valid_dates.max() if not valid_dates.empty else pd.Timestamp(datetime.now())
 
@@ -1952,7 +1955,7 @@ def app() -> None:
                 if custom_start_date:
                     mask &= (parsed_dates >= pd.Timestamp(custom_start_date))
                 if custom_end_date:
-                    mask &= (parsed_dates <= pd.Timestamp(custom_end_date))
+                    mask &= (parsed_dates <= pd.Timestamp(custom_end_date).replace(hour=23, minute=59, second=59))
                 filtered_df = filtered_df[mask].copy()
 
         # Quick Cash Flow Ribbon on search screen (with contra & FD detection)
