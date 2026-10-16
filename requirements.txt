@@ -6,3 +6,4 @@ supabase>=2.10,<3
 h2>=4.0,<5
 cryptography>=41.0.7,<42
 google-genai>=1.47,<2
+toml>=0.10.2

@@ -10,6 +10,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -313,23 +314,32 @@ def infer_bank(filename: str, raw: pd.DataFrame, header_row: int) -> str:
 
 def get_gemini_api_key() -> str:
     """Retrieve Gemini API key from session state, secrets.toml, or environment variable."""
-    if "gemini_api_key" in st.session_state and st.session_state["gemini_api_key"]:
+    if st and "gemini_api_key" in st.session_state and st.session_state["gemini_api_key"]:
         return str(st.session_state["gemini_api_key"]).strip()
     try:
-        if hasattr(st, "secrets"):
+        if st and hasattr(st, "secrets"):
             if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
                 return str(st.secrets["gemini"]["api_key"]).strip()
             if "GEMINI_API_KEY" in st.secrets:
                 return str(st.secrets["GEMINI_API_KEY"]).strip()
+            if "gemini_api_key" in st.secrets:
+                return str(st.secrets["gemini_api_key"]).strip()
     except Exception:
         pass
     sec_file = Path(".streamlit/secrets.toml")
     if sec_file.exists():
         try:
-            import toml
-            data = toml.load(sec_file)
+            try:
+                import tomllib
+                with open(sec_file, "rb") as f:
+                    data = tomllib.load(f)
+            except ImportError:
+                import toml
+                data = toml.load(sec_file)
             if "gemini" in data and "api_key" in data["gemini"]:
                 return str(data["gemini"]["api_key"]).strip()
+            if "GEMINI_API_KEY" in data:
+                return str(data["GEMINI_API_KEY"]).strip()
         except Exception:
             pass
     return os.environ.get("GEMINI_API_KEY", "").strip()
@@ -340,17 +350,21 @@ def save_gemini_api_key(api_key: str) -> bool:
     clean_k = api_key.strip()
     if not clean_k:
         return False
-    st.session_state["gemini_api_key"] = clean_k
+    if st:
+        st.session_state["gemini_api_key"] = clean_k
     secrets_path = Path(".streamlit/secrets.toml")
     try:
-        import toml
+        data = {}
         if secrets_path.exists():
-            data = toml.load(secrets_path)
-        else:
-            data = {}
+            try:
+                import toml
+                data = toml.load(secrets_path)
+            except Exception:
+                pass
         if "gemini" not in data:
             data["gemini"] = {}
         data["gemini"]["api_key"] = clean_k
+        import toml
         secrets_path.parent.mkdir(parents=True, exist_ok=True)
         with open(secrets_path, "w", encoding="utf-8") as f:
             toml.dump(data, f)
