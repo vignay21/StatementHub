@@ -1044,179 +1044,27 @@ def inject_keyboard_shortcuts() -> None:
 
 
 def inject_party_autocomplete(stored_party_names: list[str]) -> None:
-    """Inject in-cell auto-completion for Party Name in the transaction table."""
-    if components is None or not stored_party_names:
+    """Safely remove any rogue DOM popup or keydown listeners to ensure native typing accuracy."""
+    if components is None:
         return
-
-    clean_names = [clean_text(n) for n in stored_party_names if clean_text(n)]
-    names_json = json.dumps(clean_names)
-    html_code = f"""
+    html_code = """
     <script>
-    (function() {{
-        try {{
+    (function() {
+        try {
             const parentDoc = window.parent.document;
             if (!parentDoc) return;
-
-            const partyList = {names_json};
-
-            let popup = parentDoc.getElementById('sh-party-ac-popup');
-            if (!popup) {{
-                popup = parentDoc.createElement('div');
-                popup.id = 'sh-party-ac-popup';
-                popup.style.position = 'fixed';
-                popup.style.display = 'none';
-                popup.style.zIndex = '9999999';
-                popup.style.background = '#1e1e2e';
-                popup.style.border = '1px solid #45475a';
-                popup.style.borderRadius = '8px';
-                popup.style.boxShadow = '0 10px 25px rgba(0,0,0,0.6)';
-                popup.style.maxHeight = '220px';
-                popup.style.overflowY = 'auto';
-                popup.style.fontFamily = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-                popup.style.fontSize = '13px';
-                parentDoc.body.appendChild(popup);
-            }}
-
-            let activeInput = null;
-            let selectedIdx = -1;
-            let currentMatches = [];
-
-            function hidePopup() {{
-                if (popup) popup.style.display = 'none';
-                selectedIdx = -1;
-                currentMatches = [];
-            }}
-
-            function applyValue(input, val) {{
-                if (!input) return;
-                const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
-                    || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                if (setter) {{
-                    setter.call(input, val);
-                }} else {{
-                    input.value = val;
-                }}
-                input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                hidePopup();
-                input.focus();
-            }}
-
-            function updateHighlight(newIdx) {{
-                selectedIdx = newIdx;
-                const items = popup.querySelectorAll('.sh-ac-item');
-                items.forEach((it, i) => {{
-                    if (i === selectedIdx) {{
-                        it.style.background = '#313244';
-                        it.style.color = '#89b4fa';
-                    }} else {{
-                        it.style.background = 'transparent';
-                        it.style.color = '#cdd6f4';
-                    }}
-                }});
-            }}
-
-            function renderSuggestions(input, matches) {{
-                currentMatches = matches;
-                selectedIdx = -1;
-                popup.innerHTML = '';
-                if (!matches.length) {{
-                    hidePopup();
-                    return;
-                }}
-
-                const rect = input.getBoundingClientRect();
-                popup.style.top = (rect.bottom + 4) + 'px';
-                popup.style.left = Math.max(10, rect.left) + 'px';
-                popup.style.minWidth = Math.max(rect.width, 240) + 'px';
-                popup.style.maxWidth = '420px';
-                popup.style.display = 'block';
-
-                matches.forEach((name, idx) => {{
-                    const item = parentDoc.createElement('div');
-                    item.className = 'sh-ac-item';
-                    item.style.padding = '8px 12px';
-                    item.style.cursor = 'pointer';
-                    item.style.color = '#cdd6f4';
-                    item.style.borderBottom = idx < matches.length - 1 ? '1px solid #313244' : 'none';
-                    item.style.transition = 'background 0.1s ease';
-                    item.innerHTML = `<span style="color:#89b4fa;margin-right:6px;">🏷️</span><b>${{name}}</b>`;
-
-                    item.addEventListener('mouseenter', () => {{
-                        updateHighlight(idx);
-                    }});
-
-                    item.addEventListener('mousedown', (e) => {{
-                        e.preventDefault();
-                        e.stopPropagation();
-                        applyValue(input, name);
-                    }});
-
-                    popup.appendChild(item);
-                }});
-            }}
-
-            function onInputChange(e) {{
-                const input = e.target;
-                if (!input || (!input.classList.contains('gdg-input') && input.tagName !== 'TEXTAREA')) return;
-                activeInput = input;
-
-                const q = (input.value || '').trim().toLowerCase();
-                if (q.length < 1) {{
-                    hidePopup();
-                    return;
-                }}
-
-                const matches = partyList.filter(p => p.toLowerCase().includes(q)).slice(0, 8);
-                renderSuggestions(input, matches);
-            }}
-
-            function onKeyDown(e) {{
-                if (!popup || popup.style.display !== 'block' || !currentMatches.length) return;
-
-                if (e.key === 'ArrowDown') {{
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const next = (selectedIdx + 1) % currentMatches.length;
-                    updateHighlight(next);
-                }} else if (e.key === 'ArrowUp') {{
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const prev = (selectedIdx - 1 + currentMatches.length) % currentMatches.length;
-                    updateHighlight(prev);
-                }} else if ((e.key === 'Enter' || e.key === 'Tab') && selectedIdx >= 0) {{
-                    e.preventDefault();
-                    e.stopPropagation();
-                    applyValue(activeInput, currentMatches[selectedIdx]);
-                }} else if (e.key === 'Escape') {{
-                    hidePopup();
-                }}
-            }}
-
-            if (parentDoc._shPartyAcInputHandler) {{
+            const popup = parentDoc.getElementById('sh-party-ac-popup');
+            if (popup) popup.remove();
+            if (parentDoc._shPartyAcInputHandler) {
                 parentDoc.removeEventListener('input', parentDoc._shPartyAcInputHandler, true);
                 parentDoc.removeEventListener('keydown', parentDoc._shPartyAcKeyHandler, true);
                 parentDoc.removeEventListener('click', parentDoc._shPartyAcClickHandler, true);
-            }}
-
-            parentDoc._shPartyAcInputHandler = onInputChange;
-            parentDoc._shPartyAcKeyHandler = onKeyDown;
-            parentDoc._shPartyAcClickHandler = (e) => {{
-                if (popup && popup.style.display === 'block') {{
-                    if (!popup.contains(e.target) && e.target !== activeInput) {{
-                        hidePopup();
-                    }}
-                }}
-            }};
-
-            parentDoc.addEventListener('input', parentDoc._shPartyAcInputHandler, true);
-            parentDoc.addEventListener('keydown', parentDoc._shPartyAcKeyHandler, true);
-            parentDoc.addEventListener('click', parentDoc._shPartyAcClickHandler, true);
-
-        }} catch(err) {{
-            console.error('StatementHub Party Autocomplete Error:', err);
-        }}
-    }})();
+                delete parentDoc._shPartyAcInputHandler;
+                delete parentDoc._shPartyAcKeyHandler;
+                delete parentDoc._shPartyAcClickHandler;
+            }
+        } catch(e) {}
+    })();
     </script>
     """
     components.html(html_code, height=0, width=0)
@@ -2295,7 +2143,7 @@ def app() -> None:
         stored_party_names = load_stored_party_names(sb_client, combined)
 
         st.subheader(f"Results ({len(results):,})")
-        st.caption("💡 Click on any transaction's **Party Name** cell to enter party name (matching saved names will appear while typing). Click the **Date** column header to sort chronologically.")
+        st.caption("💡 Double-click or press Enter on any transaction's **Party Name** cell to enter party name. Use the **Sort by Date** filter above to sort chronologically.")
 
         render_bank_color_legend(results)
 
@@ -2306,7 +2154,7 @@ def app() -> None:
         results["FD / Investment"] = results["Is_FD"] if "Is_FD" in results.columns else detect_fd_investments(results)
 
         # Keep editor_key stable so editing a party name does NOT destroy/reload the table or reset scroll position
-        filter_sig = f"{selected_bank}_{selected_period}_{mode}_{effective_query}"
+        filter_sig = f"{selected_bank}_{selected_period}_{sort_order}_{mode}_{effective_query}"
         if st.session_state.get("last_editor_filter_sig") != filter_sig:
             st.session_state["last_editor_filter_sig"] = filter_sig
             st.session_state["editor_view_id"] = st.session_state.get("editor_view_id", 0) + 1
@@ -2324,65 +2172,128 @@ def app() -> None:
             fallback = pd.to_datetime(display_df.loc[parsed_disp_dates.isna(), "Date"], dayfirst=True, errors="coerce")
             parsed_disp_dates = parsed_disp_dates.fillna(fallback)
         display_df["Date"] = parsed_disp_dates.dt.date
+        display_df["_fingerprint"] = results["fingerprint"].values
 
         styled_results = style_table_by_bank(display_df)
 
         edited_results = st.data_editor(
             styled_results,
-            disabled=[col for col in display_columns if col != "Party Name"],
+            disabled=[col for col in display_df.columns if col != "Party Name"],
             use_container_width=True,
             hide_index=True,
             key=editor_key,
             column_config={
+                "_fingerprint": None,
                 "Bank": st.column_config.TextColumn("Bank", help="Transaction rows are color-coded by Bank"),
-                "Date": st.column_config.DateColumn(
-                    "Date",
-                    format="DD-MM-YYYY",
-                    help="Transaction date (click column header to sort chronologically)",
-                ),
+                "Date": st.column_config.DateColumn("Date", format="DD-MM-YYYY"),
                 "Amount": st.column_config.NumberColumn(format="₹ %0.2f"),
                 "Balance": st.column_config.NumberColumn(format="₹ %0.2f"),
                 "Self Transfer": st.column_config.CheckboxColumn("Self Transfer", help="Detected internal transfer between your own accounts"),
                 "FD / Investment": st.column_config.CheckboxColumn("FD / Investment", help="Detected Fixed Deposit or capital investment"),
                 "Party Name": st.column_config.TextColumn(
                     "Party Name",
-                    help="Click or double-click to type party name (matching saved names will appear while typing)",
+                    help="Double-click or press Enter to edit party name",
                 ),
             },
         )
 
+        orig_party_map = dict(
+            zip(
+                results["fingerprint"].astype(str),
+                results["Party Name"].fillna("").astype(str).str.strip(),
+            )
+        )
+
+        changes_by_fp: dict[str, str] = {}
+        if not edited_results.empty and "_fingerprint" in edited_results.columns and "Party Name" in edited_results.columns:
+            for _, r in edited_results.iterrows():
+                fp = str(r.get("_fingerprint", "")).strip()
+                if not fp:
+                    continue
+                new_val = clean_text(r.get("Party Name", "")).strip()
+                old_val = orig_party_map.get(fp, "")
+                if new_val != old_val:
+                    changes_by_fp[fp] = new_val
+
         editor_state = st.session_state.get(editor_key, {})
         edited_rows = editor_state.get("edited_rows", {})
-
-        changes_to_apply: dict[int, str] = {}
-        if not edited_results.empty and "Party Name" in edited_results.columns:
-            diff = (
-                edited_results["Party Name"].fillna("").astype(str).str.strip()
-                != results["Party Name"].fillna("").astype(str).str.strip()
-            )
-            if diff.any():
-                for idx in results.index[diff]:
-                    changes_to_apply[int(idx)] = clean_text(edited_results.loc[idx, "Party Name"])
-
-        if not changes_to_apply and edited_rows:
+        if not changes_by_fp and edited_rows:
             for idx_raw, col_edits in edited_rows.items():
                 if "Party Name" in col_edits:
-                    changes_to_apply[int(idx_raw)] = clean_text(col_edits["Party Name"])
+                    try:
+                        row_idx = int(idx_raw)
+                        if 0 <= row_idx < len(results):
+                            fp = str(results.iloc[row_idx]["fingerprint"]).strip()
+                            new_val = clean_text(col_edits["Party Name"]).strip()
+                            old_val = orig_party_map.get(fp, "")
+                            if fp and new_val != old_val:
+                                changes_by_fp[fp] = new_val
+                    except Exception:
+                        pass
 
-        if changes_to_apply:
+        if changes_by_fp:
             updated_count = 0
-            for idx, new_val in changes_to_apply.items():
-                if idx in results.index:
-                    fp = results.loc[idx, "fingerprint"]
-                    current_val = results.loc[idx, "Party Name"]
-                    if str(new_val).strip() != str(current_val).strip():
-                        assign_party_name_to_transactions([fp], new_val, combined, sb_client)
-                        results.loc[idx, "Party Name"] = new_val
-                        updated_count += 1
+            for fp, new_val in changes_by_fp.items():
+                assign_party_name_to_transactions([fp], new_val, combined, sb_client)
+                results.loc[results["fingerprint"] == fp, "Party Name"] = new_val
+                updated_count += 1
 
             if updated_count > 0:
                 st.session_state["cached_transactions"] = combined
                 st.toast(f"Saved party name for {updated_count} transaction{'s' if updated_count > 1 else ''}.", icon="✅")
+
+        with st.expander("⚡ Quick Assign Party Name (Searchable Dropdown)"):
+            st.markdown("**Quickly assign or correct a party name for any transaction using saved names or a new name.**")
+            txn_options = []
+            for _, r in results.iterrows():
+                desc_short = (r["Description"][:35] + "…") if len(r["Description"]) > 35 else r["Description"]
+                curr_p = f" [{r['Party Name']}]" if r["Party Name"] else " [No Name]"
+                label = f"{r['Date']} | {r['Bank']} | {format_inr(r['Amount'])} | {desc_short}{curr_p}"
+                txn_options.append((r["fingerprint"], label))
+
+            qa_col1, qa_col2 = st.columns([3, 2])
+            with qa_col1:
+                selected_txn_fp = st.selectbox(
+                    "Select Transaction from current results",
+                    options=[t[0] for t in txn_options],
+                    format_func=lambda fp: next((t[1] for t in txn_options if t[0] == fp), fp),
+                    key="qa_txn_select",
+                ) if txn_options else None
+            with qa_col2:
+                selected_party_choice = st.selectbox(
+                    "Party Name (Choose or type new)",
+                    options=stored_party_names,
+                    index=None,
+                    placeholder="Search saved names or type new...",
+                    accept_new_options=True,
+                    key="qa_party_select",
+                )
+
+            qa_btn_col, qa_match_col = st.columns([1.5, 3.5], vertical_alignment="center")
+            with qa_match_col:
+                apply_to_all_matching = st.checkbox(
+                    "Also apply to all transactions with identical narration / counterparty",
+                    value=False,
+                    key="qa_apply_matching",
+                )
+            with qa_btn_col:
+                if st.button("💾 Apply Party Name", type="primary", use_container_width=True, key="qa_apply_btn"):
+                    clean_name = clean_text(selected_party_choice).strip()
+                    if selected_txn_fp and clean_name:
+                        target_fps = [selected_txn_fp]
+                        if apply_to_all_matching:
+                            matched_desc = results.loc[results["fingerprint"] == selected_txn_fp, "Description"].values
+                            if len(matched_desc) > 0:
+                                d_val = matched_desc[0]
+                                extra_fps = combined.loc[combined["Description"] == d_val, "fingerprint"].dropna().tolist()
+                                target_fps = list(set(target_fps + extra_fps))
+
+                        count_assigned = assign_party_name_to_transactions(target_fps, clean_name, combined, sb_client)
+                        st.session_state["cached_transactions"] = combined
+                        st.toast(f"Assigned '{clean_name}' to {count_assigned} transaction{'s' if count_assigned > 1 else ''}!", icon="✅")
+                        st.rerun()
+                    elif not clean_name:
+                        st.warning("Please enter or select a party name.")
 
         with st.expander(f"📁 Stored Party Names ({len(stored_party_names)})"):
             st.markdown("**Directory of stored party names used for auto-completion suggestions.**")
