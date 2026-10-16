@@ -393,7 +393,7 @@ def extract_transactions_from_pdf_with_gemini(source: Any, filename: str) -> pd.
         "Return ONLY a JSON array of transaction objects."
     )
 
-    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    models_to_try = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"]
     last_err = None
     for model_name in models_to_try:
         try:
