@@ -1939,6 +1939,8 @@ def app() -> None:
     st.set_page_config(page_title="Unified Bank Search", page_icon="🔎", layout="wide")
     sb_client = db.get_supabase_client()
     inject_keyboard_shortcuts()
+    if sb_client and ("cached_transactions" not in st.session_state or st.session_state["cached_transactions"].empty):
+        st.session_state["cached_transactions"] = db.fetch_all_transactions(sb_client)
 
     # Prevent metric numbers from truncating with ellipsis (...)
     st.markdown(
@@ -2026,20 +2028,27 @@ def app() -> None:
             assignments["party_mappings"].update(db_mappings)
 
     cached_txns_hint = st.session_state.get("cached_transactions", pd.DataFrame())
-    latest_date_hint = ""
-    if not cached_txns_hint.empty and "Date" in cached_txns_hint.columns:
-        parsed_dates_hint = pd.to_datetime(cached_txns_hint["Date"], format="%d-%m-%Y", errors="coerce").dropna()
-        if not parsed_dates_hint.empty:
-            latest_date_hint = f"Your database already has transactions recorded up to **{parsed_dates_hint.max().strftime('%d-%b-%Y')}**. "
+    if not cached_txns_hint.empty and "Bank" in cached_txns_hint.columns and "Date" in cached_txns_hint.columns:
+        df_hint = cached_txns_hint.copy()
+        dt_col = pd.to_datetime(df_hint["Date"], format="%d-%m-%Y", errors="coerce")
+        if dt_col.isna().any():
+            fallback = pd.to_datetime(df_hint.loc[dt_col.isna(), "Date"], dayfirst=True, errors="coerce")
+            dt_col = dt_col.fillna(fallback)
+        df_hint["_dt"] = dt_col
 
-    st.info(
-        f"⚡ **Pro-Tip for Fast Uploads:** {latest_date_hint}"
-        "Because StatementHub automatically deduplicates and remembers all previous transactions in the cloud, "
-        "**you only need to download & upload the incremental new dates from your bank** "
-        "(e.g., if you already uploaded up to 15-Oct, download only **15-Oct to today**). "
-        "A 1–2 page PDF extracts in **3 to 5 seconds**, instead of waiting for a 15–20 page full-month PDF!",
-        icon="⚡",
-    )
+        bank_items = []
+        for b in sorted([x for x in df_hint["Bank"].dropna().unique() if str(x).strip()]):
+            b_max = df_hint.loc[df_hint["Bank"] == b, "_dt"].dropna().max()
+            if pd.notna(b_max):
+                bank_items.append(f"**{b}:** `{b_max.strftime('%d-%b-%Y')}`")
+
+        if bank_items:
+            st.info(
+                "📅 **Latest Recorded Dates in Database:** "
+                + " &nbsp;•&nbsp; ".join(bank_items)
+                + " &nbsp;*(upload statements from these dates onwards)*",
+                icon="📅",
+            )
 
     files = st.file_uploader(
         "Add or replace statements", type=["csv", "xls", "xlsx", "pdf"], accept_multiple_files=True,
