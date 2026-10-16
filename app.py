@@ -2025,6 +2025,22 @@ def app() -> None:
         if db_mappings:
             assignments["party_mappings"].update(db_mappings)
 
+    cached_txns_hint = st.session_state.get("cached_transactions", pd.DataFrame())
+    latest_date_hint = ""
+    if not cached_txns_hint.empty and "Date" in cached_txns_hint.columns:
+        parsed_dates_hint = pd.to_datetime(cached_txns_hint["Date"], format="%d-%m-%Y", errors="coerce").dropna()
+        if not parsed_dates_hint.empty:
+            latest_date_hint = f"Your database already has transactions recorded up to **{parsed_dates_hint.max().strftime('%d-%b-%Y')}**. "
+
+    st.info(
+        f"⚡ **Pro-Tip for Fast Uploads:** {latest_date_hint}"
+        "Because StatementHub automatically deduplicates and remembers all previous transactions in the cloud, "
+        "**you only need to download & upload the incremental new dates from your bank** "
+        "(e.g., if you already uploaded up to 15-Oct, download only **15-Oct to today**). "
+        "A 1–2 page PDF extracts in **3 to 5 seconds**, instead of waiting for a 15–20 page full-month PDF!",
+        icon="⚡",
+    )
+
     files = st.file_uploader(
         "Add or replace statements", type=["csv", "xls", "xlsx", "pdf"], accept_multiple_files=True,
         help="Select statements to upload. With Supabase, existing transactions are automatically skipped and only new ones are inserted. PDFs are extracted automatically using Gemini AI.",
