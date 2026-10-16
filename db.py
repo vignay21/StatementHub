@@ -70,6 +70,12 @@ def clean_str(val: Any) -> str:
     return text
 
 
+def normalize_narration(desc: Any) -> str:
+    text = clean_str(desc)
+    text = re.sub(r"\s*Chq:\s*\d*$", "", text, flags=re.I).strip()
+    return text.upper()
+
+
 def compute_transaction_fingerprint(row: dict[str, Any]) -> str:
     """Generate a stable fingerprint independent of the upload file name.
 
@@ -86,8 +92,8 @@ def compute_transaction_fingerprint(row: dict[str, Any]) -> str:
         clean_str(row.get("Date")),
         amount_str,
         clean_str(row.get("Type")),
-        clean_str(row.get("UTR / Reference")),
-        clean_str(row.get("Description")),
+        clean_str(row.get("UTR / Reference")).upper(),
+        normalize_narration(row.get("Description")),
         balance_str,
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
@@ -321,7 +327,7 @@ def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int,
         except Exception:
             pass
 
-    # Layer 2: Query existing (bank, date, amount, type, utr) for populated UTRs
+    # Layer 2: Query existing (bank, date, amount, type, utr) for populated UTRs (case-insensitive)
     existing_utr_keys: set[tuple[str, str, float, str, str]] = set()
     if valid_utrs:
         for i in range(0, len(valid_utrs), chunk_size):
@@ -334,8 +340,29 @@ def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int,
                         clean_str(item.get("date")),
                         float(item.get("amount", 0)),
                         clean_str(item.get("type")),
-                        clean_str(item.get("utr")),
+                        clean_str(item.get("utr")).upper(),
                     ))
+            except Exception:
+                pass
+
+    # Layer 3: Query existing (bank, date, amount, type, balance) for records with valid closing balance
+    existing_bal_keys: set[tuple[str, str, float, str, float]] = set()
+    dates_with_balance = list({r["date"] for r in records if r["date"] and r["balance"] is not None and r["balance"] > 0})
+    if dates_with_balance:
+        for i in range(0, len(dates_with_balance), chunk_size):
+            d_chunk = dates_with_balance[i:i + chunk_size]
+            try:
+                res = client.table("transactions").select("bank, date, amount, type, balance").in_("date", d_chunk).execute()
+                for item in res.data:
+                    b_val = item.get("balance")
+                    if b_val is not None:
+                        existing_bal_keys.add((
+                            clean_str(item.get("bank")),
+                            clean_str(item.get("date")),
+                            float(item.get("amount", 0)),
+                            clean_str(item.get("type")),
+                            round(float(b_val), 2),
+                        ))
             except Exception:
                 pass
 
@@ -344,8 +371,12 @@ def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int,
         if r["fingerprint"] in existing_fps:
             continue
         if r["utr"]:
-            key = (r["bank"], r["date"], r["amount"], r["type"], r["utr"])
-            if key in existing_utr_keys:
+            key_utr = (r["bank"], r["date"], r["amount"], r["type"], r["utr"].upper())
+            if key_utr in existing_utr_keys:
+                continue
+        if r["balance"] is not None and r["balance"] > 0:
+            key_bal = (r["bank"], r["date"], r["amount"], r["type"], round(r["balance"], 2))
+            if key_bal in existing_bal_keys:
                 continue
         to_insert.append(r)
 
