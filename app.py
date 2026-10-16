@@ -438,6 +438,8 @@ def extract_transactions_from_pdf_with_gemini(source: Any, filename: str) -> pd.
                 for c in cols:
                     if c not in df.columns:
                         df[c] = ""
+                df["Debit"] = df["Debit"].apply(lambda v: "" if v in (0, 0.0, "0", "0.0", None) else v)
+                df["Credit"] = df["Credit"].apply(lambda v: "" if v in (0, 0.0, "0", "0.0", None) else v)
                 header_row = pd.DataFrame([[c for c in cols]], columns=cols)
                 return pd.concat([header_row, df[cols]], ignore_index=True)
             else:
@@ -593,8 +595,21 @@ def normalize_statement(source: Any, filename: str) -> ImportedStatement:
         description = clean_text(row.get(description_col))
         if pd.isna(date_value) or (debit is None and credit is None) or not description:
             continue
-        amount = credit if credit is not None else debit
-        transaction_type = "Credit" if credit is not None else "Debit"
+        if credit is not None and credit > 0:
+            amount = credit
+            transaction_type = "Credit"
+        elif debit is not None and debit > 0:
+            amount = debit
+            transaction_type = "Debit"
+        elif credit is not None and (debit is None or debit == 0):
+            amount = credit
+            transaction_type = "Credit"
+        elif debit is not None and (credit is None or credit == 0):
+            amount = debit
+            transaction_type = "Debit"
+        else:
+            amount = credit if credit is not None else (debit if debit is not None else 0.0)
+            transaction_type = "Credit" if (credit is not None and credit >= 0) else "Debit"
         original = {column: clean_text(row.get(column)) for column in data.columns if clean_text(row.get(column))}
         records.append({
             "Date": date_value.strftime("%d-%m-%Y"),
