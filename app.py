@@ -2019,7 +2019,8 @@ def app() -> None:
 
     # Process new uploads ONLY when the file set changes
     if files and st.session_state.get("last_uploaded_signature") != current_file_signature:
-        uploaded_df, imports, errors = load_uploaded(files)
+        with st.spinner("Extracting transactions from statement(s)... (Gemini AI parsing PDF)"):
+            uploaded_df, imports, errors = load_uploaded(files)
         for error in errors:
             st.error(error)
         if not uploaded_df.empty:
