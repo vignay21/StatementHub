@@ -2305,10 +2305,13 @@ def app() -> None:
         results["Self Transfer"] = results["Is_Internal"] if "Is_Internal" in results.columns else detect_internal_transfers(results)
         results["FD / Investment"] = results["Is_FD"] if "Is_FD" in results.columns else detect_fd_investments(results)
 
-        if "editor_version" not in st.session_state:
-            st.session_state.editor_version = 0
+        # Keep editor_key stable so editing a party name does NOT destroy/reload the table or reset scroll position
+        filter_sig = f"{selected_bank}_{selected_period}_{mode}_{effective_query}"
+        if st.session_state.get("last_editor_filter_sig") != filter_sig:
+            st.session_state["last_editor_filter_sig"] = filter_sig
+            st.session_state["editor_view_id"] = st.session_state.get("editor_view_id", 0) + 1
 
-        editor_key = f"transactions_editor_{st.session_state.editor_version}"
+        editor_key = f"transactions_editor_{st.session_state.get('editor_view_id', 0)}"
 
         display_columns = [
             "Bank", "Date", "Description", "Party Name", "Amount", "Type",
@@ -2371,13 +2374,15 @@ def app() -> None:
             for idx, new_val in changes_to_apply.items():
                 if idx in results.index:
                     fp = results.loc[idx, "fingerprint"]
-                    assign_party_name_to_transactions([fp], new_val, combined, sb_client)
-                    updated_count += 1
+                    current_val = results.loc[idx, "Party Name"]
+                    if str(new_val).strip() != str(current_val).strip():
+                        assign_party_name_to_transactions([fp], new_val, combined, sb_client)
+                        results.loc[idx, "Party Name"] = new_val
+                        updated_count += 1
 
-            st.session_state["cached_transactions"] = combined
-            st.session_state.editor_version += 1
-            st.toast(f"Saved party name for {updated_count} transaction{'s' if updated_count > 1 else ''}.", icon="✅")
-            st.rerun()
+            if updated_count > 0:
+                st.session_state["cached_transactions"] = combined
+                st.toast(f"Saved party name for {updated_count} transaction{'s' if updated_count > 1 else ''}.", icon="✅")
 
         with st.expander(f"📁 Stored Party Names ({len(stored_party_names)})"):
             st.markdown("**Directory of stored party names used for auto-completion suggestions.**")
