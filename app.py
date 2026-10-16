@@ -2044,7 +2044,7 @@ def app() -> None:
 
         if bank_items:
             st.info(
-                "📅 **Latest Recorded Dates in Database:** "
+                "**Latest Recorded Dates in Database:** "
                 + " &nbsp;•&nbsp; ".join(bank_items)
                 + " &nbsp;*(upload statements from these dates onwards)*",
                 icon="📅",
