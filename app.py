@@ -311,8 +311,134 @@ def infer_bank(filename: str, raw: pd.DataFrame, header_row: int) -> str:
     return "Unknown bank"
 
 
+def get_gemini_api_key() -> str:
+    """Retrieve Gemini API key from session state, secrets.toml, or environment variable."""
+    if "gemini_api_key" in st.session_state and st.session_state["gemini_api_key"]:
+        return str(st.session_state["gemini_api_key"]).strip()
+    try:
+        if hasattr(st, "secrets"):
+            if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
+                return str(st.secrets["gemini"]["api_key"]).strip()
+            if "GEMINI_API_KEY" in st.secrets:
+                return str(st.secrets["GEMINI_API_KEY"]).strip()
+    except Exception:
+        pass
+    sec_file = Path(".streamlit/secrets.toml")
+    if sec_file.exists():
+        try:
+            import toml
+            data = toml.load(sec_file)
+            if "gemini" in data and "api_key" in data["gemini"]:
+                return str(data["gemini"]["api_key"]).strip()
+        except Exception:
+            pass
+    return os.environ.get("GEMINI_API_KEY", "").strip()
+
+
+def save_gemini_api_key(api_key: str) -> bool:
+    """Persist Gemini API key into .streamlit/secrets.toml and session state."""
+    clean_k = api_key.strip()
+    if not clean_k:
+        return False
+    st.session_state["gemini_api_key"] = clean_k
+    secrets_path = Path(".streamlit/secrets.toml")
+    try:
+        import toml
+        if secrets_path.exists():
+            data = toml.load(secrets_path)
+        else:
+            data = {}
+        if "gemini" not in data:
+            data["gemini"] = {}
+        data["gemini"]["api_key"] = clean_k
+        secrets_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(secrets_path, "w", encoding="utf-8") as f:
+            toml.dump(data, f)
+        return True
+    except Exception:
+        return True
+
+
+def extract_transactions_from_pdf_with_gemini(source: Any, filename: str) -> pd.DataFrame:
+    """Extract bank transactions from a PDF file using Gemini multimodal AI."""
+    api_key = get_gemini_api_key()
+    if not api_key:
+        raise ValueError(
+            f"Cannot process PDF '{filename}' because Gemini API key is missing. "
+            "Please enter your Gemini API key in the 'Gemini AI Settings' expander above or add it to .streamlit/secrets.toml."
+        )
+
+    pdf_bytes = source.getvalue() if hasattr(source, "getvalue") else Path(source).read_bytes()
+    if not pdf_bytes:
+        raise ValueError(f"The PDF file '{filename}' is empty.")
+
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        raise RuntimeError("Google GenAI library is not installed. Run: pip install google-genai")
+
+    client = genai.Client(api_key=api_key)
+
+    prompt = (
+        "You are an expert banking statement extraction engine. "
+        "Extract all individual bank transactions from this PDF statement into a clean tabular JSON format. "
+        "Each transaction must have:\n"
+        "- 'Date': Transaction date in DD-MM-YYYY format.\n"
+        "- 'Description': Full transaction narration or description.\n"
+        "- 'Debit': Withdrawal/debit amount as a number (or null/0 if it is a credit).\n"
+        "- 'Credit': Deposit/credit amount as a number (or null/0 if it is a debit).\n"
+        "- 'Reference': Cheque number, UTR, UPI transaction ID, or IMPS reference if available, else empty string.\n"
+        "- 'Balance': Account balance after transaction as a number, or null if not available.\n\n"
+        "Return ONLY a JSON array of transaction objects."
+    )
+
+    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    last_err = None
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[
+                    types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
+                    prompt,
+                ],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.0,
+                ),
+            )
+            raw_text = response.text.strip()
+            if raw_text.startswith("```"):
+                raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+                raw_text = re.sub(r"\s*```$", "", raw_text)
+            records = json.loads(raw_text)
+            if isinstance(records, dict):
+                for v in records.values():
+                    if isinstance(v, list):
+                        records = v
+                        break
+            if isinstance(records, list) and records:
+                df = pd.DataFrame(records)
+                cols = ["Date", "Description", "Debit", "Credit", "Reference", "Balance"]
+                for c in cols:
+                    if c not in df.columns:
+                        df[c] = ""
+                header_row = pd.DataFrame([[c for c in cols]], columns=cols)
+                return pd.concat([header_row, df[cols]], ignore_index=True)
+            else:
+                raise ValueError("No transaction records were identified in the PDF statement.")
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise ValueError(f"Failed to extract transactions from PDF using Gemini: {last_err}")
+
+
 def read_statement(source: Any, filename: str) -> pd.DataFrame:
     suffix = Path(filename).suffix.lower()
+    if suffix == ".pdf":
+        return extract_transactions_from_pdf_with_gemini(source, filename)
     if suffix == ".csv":
         # Indian bank exports are commonly UTF-8, UTF-8 with BOM, Windows-1252, or Latin-1.
         data = source.getvalue() if hasattr(source, "getvalue") else Path(source).read_bytes()
@@ -336,7 +462,7 @@ def read_statement(source: Any, filename: str) -> pd.DataFrame:
                 continue
         raise ValueError("Could not decode the CSV file.")
     if suffix not in {".xls", ".xlsx"}:
-        raise ValueError("Only .csv, .xls, and .xlsx statements are supported.")
+        raise ValueError("Only .csv, .xls, .xlsx, and .pdf statements are supported.")
     data = source.getvalue() if hasattr(source, "getvalue") else Path(source).read_bytes()
     primary_engine = "openpyxl" if suffix == ".xlsx" else "xlrd"
     fallback_engine = "xlrd" if primary_engine == "openpyxl" else "openpyxl"
@@ -1809,19 +1935,50 @@ def app() -> None:
     with col_title:
         st.title("Unified Bank Search")
     with col_status:
+        badges = []
         if sb_client:
             cached_txns = st.session_state.get("cached_transactions", pd.DataFrame())
             storage_quick = db.get_database_storage_stats(sb_client, cached_txns if not cached_txns.empty else None)
             free_space_text = f"{storage_quick['free_mb']:.1f} MB Free / {storage_quick['total_quota_mb']:.0f} MB"
-            if hasattr(st, "badge"):
-                st.badge(f"🟢 Supabase Connected • 💾 {free_space_text}", color="green")
-            else:
-                st.caption(f"🟢 **Supabase Connected** • 💾 **{free_space_text}**")
+            badges.append(f"🟢 **Supabase Connected** • 💾 **{free_space_text}**")
         else:
-            if hasattr(st, "badge"):
-                st.badge("💾 Local Mode", color="gray")
-            else:
-                st.caption("💾 **Local Mode**")
+            badges.append("💾 **Local Mode**")
+
+        gemini_key = get_gemini_api_key()
+        if gemini_key:
+            badges.append("✨ **Gemini AI (PDF Ready)**")
+        else:
+            badges.append("📄 **PDFs need Gemini Key**")
+
+        st.caption(" | ".join(badges))
+
+    gemini_key = get_gemini_api_key()
+    with st.expander("✨ Gemini AI Settings (PDF Statement Parser)", expanded=(not bool(gemini_key))):
+        st.markdown(
+            "**Extract Bank Statements Directly from PDFs:**\n\n"
+            "StatementHub uses Google's Gemini multimodal AI to read and extract tabular transactions from bank statement PDFs automatically."
+        )
+        col_gk_input, col_gk_btn = st.columns([4, 1.2], vertical_alignment="bottom")
+        with col_gk_input:
+            new_gk = st.text_input(
+                "Gemini API Key",
+                value=gemini_key if gemini_key else "",
+                type="password",
+                placeholder="Paste your Gemini API key (e.g. AIzaSy...)",
+                help="Get a free API key at https://aistudio.google.com",
+            )
+        with col_gk_btn:
+            if st.button("💾 Save Key", use_container_width=True, key="save_gemini_key_btn"):
+                if new_gk.strip():
+                    save_gemini_api_key(new_gk.strip())
+                    st.toast("Gemini API key saved successfully!", icon="✅")
+                    st.rerun()
+                else:
+                    st.warning("Please enter a valid API key.")
+        if gemini_key:
+            st.caption("🟢 **Gemini API Key Configured & Ready for PDF Uploads**")
+        else:
+            st.caption("ℹ️ Get a free API key from [Google AI Studio](https://aistudio.google.com) to enable PDF uploads.")
 
     if not sb_client:
         with st.expander("☁️ Connect Supabase (Cloud Database)", expanded=False):
@@ -1840,8 +1997,8 @@ def app() -> None:
             assignments["party_mappings"].update(db_mappings)
 
     files = st.file_uploader(
-        "Add or replace statements", type=["csv", "xls", "xlsx"], accept_multiple_files=True,
-        help="Select statements to upload. With Supabase, existing transactions are automatically skipped and only new ones are inserted.",
+        "Add or replace statements", type=["csv", "xls", "xlsx", "pdf"], accept_multiple_files=True,
+        help="Select statements to upload. With Supabase, existing transactions are automatically skipped and only new ones are inserted. PDFs are extracted automatically using Gemini AI.",
     )
 
     current_file_signature = [(f.name, getattr(f, "size", 0)) for f in files] if files else []
