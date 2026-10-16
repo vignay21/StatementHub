@@ -7,8 +7,11 @@ and party name mappings sync.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -139,8 +142,11 @@ def fetch_party_names(client: Client) -> list[str]:
 
     # 2. Try from party_mappings table (existing schema store)
     try:
-        res = client.table("party_mappings").select("party_name").execute()
+        res = client.table("party_mappings").select("match_key, party_name").execute()
         for item in res.data:
+            mk = clean_str(item.get("match_key", ""))
+            if mk.startswith("__meta_"):
+                continue
             val = clean_str(item.get("party_name"))
             if val:
                 names.add(val)
@@ -230,7 +236,11 @@ def fetch_party_mappings(client: Client) -> dict[str, str]:
     """Fetch all reusable party mappings from Supabase."""
     try:
         response = client.table("party_mappings").select("match_key, party_name").execute()
-        return {item["match_key"]: item["party_name"] for item in response.data}
+        return {
+            item["match_key"]: item["party_name"]
+            for item in response.data
+            if not item.get("match_key", "").startswith("__meta_")
+        }
     except Exception:
         return {}
 
@@ -277,6 +287,108 @@ def clear_all_party_mappings(client: Client) -> bool:
 def save_transaction_override(client: Client, fingerprint: str, party_name: str) -> bool:
     """Save an override for a single transaction in Supabase."""
     return update_transaction_party(client, fingerprint, party_name)
+
+
+DEFAULT_GEMINI_DAILY_QUOTA = 1500
+
+
+def get_gemini_api_usage(client: Client | None = None) -> dict[str, Any]:
+    """Retrieve Gemini API usage statistics and remaining quota for today."""
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    raw: dict[str, Any] | None = None
+
+    if client is not None:
+        try:
+            res = client.table("party_mappings").select("party_name").eq("match_key", "__meta_gemini_usage__").execute()
+            if res.data:
+                raw = json.loads(res.data[0]["party_name"])
+        except Exception:
+            pass
+
+    local_path = Path(".statementhub/gemini_usage.json")
+    if not raw and local_path.exists():
+        try:
+            raw = json.loads(local_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    if not raw:
+        raw = {
+            "date": today_str,
+            "requests_today": 0,
+            "total_requests": 0,
+            "total_tokens": 0,
+            "last_used": "",
+            "daily_quota": DEFAULT_GEMINI_DAILY_QUOTA,
+        }
+
+    # Reset daily count if date has changed (new UTC day)
+    if raw.get("date") != today_str:
+        raw["date"] = today_str
+        raw["requests_today"] = 0
+
+    quota = raw.get("daily_quota") or DEFAULT_GEMINI_DAILY_QUOTA
+    raw["daily_quota"] = quota
+    raw["remaining_today"] = max(0, quota - raw.get("requests_today", 0))
+    return raw
+
+
+def record_gemini_api_call(client: Client | None = None, tokens: int = 0) -> dict[str, Any]:
+    """Increment API request counter and update token consumption metrics."""
+    usage = get_gemini_api_usage(client)
+    now_str = datetime.now().strftime("%d-%b-%Y %I:%M %p")
+    usage["requests_today"] = usage.get("requests_today", 0) + 1
+    usage["total_requests"] = usage.get("total_requests", 0) + 1
+    usage["total_tokens"] = usage.get("total_tokens", 0) + max(0, tokens)
+    usage["last_used"] = now_str
+    usage["remaining_today"] = max(0, usage["daily_quota"] - usage["requests_today"])
+
+    if client is not None:
+        try:
+            client.table("party_mappings").upsert({
+                "match_key": "__meta_gemini_usage__",
+                "party_name": json.dumps(usage),
+            }).execute()
+        except Exception:
+            pass
+
+    try:
+        local_path = Path(".statementhub/gemini_usage.json")
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_text(json.dumps(usage), encoding="utf-8")
+    except Exception:
+        pass
+
+    return usage
+
+
+def reset_gemini_api_usage(client: Client | None = None) -> bool:
+    """Manually reset API usage counters."""
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    clean_usage = {
+        "date": today_str,
+        "requests_today": 0,
+        "total_requests": 0,
+        "total_tokens": 0,
+        "last_used": "",
+        "daily_quota": DEFAULT_GEMINI_DAILY_QUOTA,
+        "remaining_today": DEFAULT_GEMINI_DAILY_QUOTA,
+    }
+    if client is not None:
+        try:
+            client.table("party_mappings").upsert({
+                "match_key": "__meta_gemini_usage__",
+                "party_name": json.dumps(clean_usage),
+            }).execute()
+        except Exception:
+            pass
+    try:
+        local_path = Path(".statementhub/gemini_usage.json")
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_text(json.dumps(clean_usage), encoding="utf-8")
+    except Exception:
+        pass
+    return True
 
 
 def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int, int]:

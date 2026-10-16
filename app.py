@@ -422,6 +422,14 @@ def extract_transactions_from_pdf_with_gemini(source: Any, filename: str) -> pd.
                     temperature=0.0,
                 ),
             )
+            # Record successful Gemini API request & token count
+            try:
+                tokens_used = getattr(getattr(response, "usage_metadata", None), "total_token_count", 0) or 0
+                sb_for_log = db.get_supabase_client()
+                db.record_gemini_api_call(sb_for_log, tokens=tokens_used)
+            except Exception:
+                pass
+
             raw_text = response.text.strip()
             if raw_text.startswith("```"):
                 raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
@@ -1977,14 +1985,15 @@ def app() -> None:
 
         gemini_key = get_gemini_api_key()
         if gemini_key:
-            badges.append("✨ **Gemini AI (PDF Ready)**")
+            usage_badge = db.get_gemini_api_usage(sb_client)
+            badges.append(f"✨ **Gemini API:** `{usage_badge['remaining_today']:,} / {usage_badge['daily_quota']:,} left today`")
         else:
             badges.append("📄 **PDFs need Gemini Key**")
 
         st.caption(" | ".join(badges))
 
     gemini_key = get_gemini_api_key()
-    with st.expander("✨ Gemini AI Settings (PDF Statement Parser)", expanded=(not bool(gemini_key))):
+    with st.expander("✨ Gemini AI Settings & Daily Quota Monitor", expanded=(not bool(gemini_key))):
         st.markdown(
             "**Extract Bank Statements Directly from PDFs:**\n\n"
             "StatementHub uses Google's Gemini multimodal AI to read and extract tabular transactions from bank statement PDFs automatically."
@@ -2008,6 +2017,55 @@ def app() -> None:
                     st.warning("Please enter a valid API key.")
         if gemini_key:
             st.caption("🟢 **Gemini API Key Configured & Ready for PDF Uploads**")
+            usage = db.get_gemini_api_usage(sb_client)
+            st.divider()
+            st.markdown("##### 📊 Daily API Quota & Usage Monitor")
+
+            q_col1, q_col2, q_col3 = st.columns(3)
+            with q_col1:
+                st.metric(
+                    "Requests Used Today",
+                    f"{usage['requests_today']:,}",
+                    help="API requests consumed today since midnight UTC (5:30 AM IST)",
+                )
+            with q_col2:
+                st.metric(
+                    "Requests Remaining Today",
+                    f"{usage['remaining_today']:,}",
+                    delta=f"{usage['daily_quota']:,} Daily Limit",
+                    delta_color="normal",
+                )
+            with q_col3:
+                st.metric(
+                    "Tokens Consumed",
+                    f"{usage.get('total_tokens', 0):,}",
+                    help="Total input & output tokens processed by Gemini",
+                )
+
+            pct = min(1.0, usage["requests_today"] / max(1, usage["daily_quota"]))
+            st.progress(
+                pct,
+                text=f"{usage['requests_today']:,} of {usage['daily_quota']:,} daily requests used ({pct * 100:.1f}%) • Free Tier Quota",
+            )
+
+            st.caption(
+                f"🟢 **Google AI Studio Free Tier:** **1,500 requests/day** • **15 requests/minute**. "
+                f"Quota automatically resets daily at 00:00 UTC (5:30 AM IST). "
+                + (f"*(Last request: {usage['last_used']})*" if usage.get("last_used") else "")
+            )
+
+            col_link, col_reset = st.columns([3, 1])
+            with col_link:
+                st.link_button(
+                    "🔗 Open Google AI Studio Official Usage Dashboard",
+                    "https://aistudio.google.com/",
+                    use_container_width=True,
+                )
+            with col_reset:
+                if st.button("🔄 Reset Counter", key="reset_gemini_usage_btn", use_container_width=True):
+                    db.reset_gemini_api_usage(sb_client)
+                    st.toast("API usage counter reset!", icon="✅")
+                    st.rerun()
         else:
             st.caption("ℹ️ Get a free API key from [Google AI Studio](https://aistudio.google.com) to enable PDF uploads.")
 
