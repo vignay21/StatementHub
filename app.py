@@ -848,17 +848,27 @@ def export_excel(transactions: pd.DataFrame) -> bytes:
 
 
 def sort_dataframe_by_date(df: pd.DataFrame, ascending: bool = False) -> pd.DataFrame:
-    """Sort a DataFrame chronologically by its 'Date' column (%d-%m-%Y)."""
+    """Sort a DataFrame chronologically by its 'Date' column (%d-%m-%Y) in a strictly deterministic, stable manner."""
     if df.empty or "Date" not in df.columns:
         return df.copy() if hasattr(df, "copy") else df
-    parsed_dates = pd.to_datetime(df["Date"], format="%d-%m-%Y", errors="coerce")
+
+    df_out = df.copy()
+    parsed_dates = pd.to_datetime(df_out["Date"], format="%d-%m-%Y", errors="coerce")
     if parsed_dates.isna().any():
-        fallback = pd.to_datetime(df.loc[parsed_dates.isna(), "Date"], dayfirst=True, errors="coerce")
+        fallback = pd.to_datetime(df_out.loc[parsed_dates.isna(), "Date"], dayfirst=True, errors="coerce")
         parsed_dates = parsed_dates.fillna(fallback)
-    order = parsed_dates.argsort(kind="mergesort")
-    if not ascending:
-        order = order[::-1]
-    return df.iloc[order].reset_index(drop=True)
+
+    df_out["_sort_dt"] = parsed_dates
+    sort_cols = ["_sort_dt"]
+    sort_asc = [ascending]
+
+    for col, asc in [("Bank", True), ("Amount", False), ("fingerprint", True), ("UTR / Reference", True)]:
+        if col in df_out.columns:
+            sort_cols.append(col)
+            sort_asc.append(asc)
+
+    df_out = df_out.sort_values(by=sort_cols, ascending=sort_asc, kind="mergesort")
+    return df_out.drop(columns=["_sort_dt"]).reset_index(drop=True)
 
 
 def search_transactions(transactions: pd.DataFrame, query: str, mode: str) -> pd.DataFrame:
