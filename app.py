@@ -2552,43 +2552,6 @@ def app() -> None:
                 st.toast(f"Saved party name for {updated_count} transaction{'s' if updated_count > 1 else ''}.", icon="✅")
                 st.rerun()
 
-        with st.expander("⚡ Quick Assign Party Name (Searchable Dropdown)"):
-            st.markdown("**Quickly assign or correct a party name for any transaction using saved names or a new name.**")
-            txn_options = []
-            for _, r in results.iterrows():
-                desc_short = (r["Description"][:35] + "…") if len(r["Description"]) > 35 else r["Description"]
-                curr_p = f" [{r['Party Name']}]" if r["Party Name"] else " [No Name]"
-                label = f"{r['Date']} | {r['Bank']} | {format_inr(r['Amount'])} | {desc_short}{curr_p}"
-                txn_options.append((r["fingerprint"], label))
-
-            qa_col1, qa_col2 = st.columns([3, 2])
-            with qa_col1:
-                selected_txn_fp = st.selectbox(
-                    "Select Transaction from current results",
-                    options=[t[0] for t in txn_options],
-                    format_func=lambda fp: next((t[1] for t in txn_options if t[0] == fp), fp),
-                    key="qa_txn_select",
-                ) if txn_options else None
-            with qa_col2:
-                selected_party_choice = st.selectbox(
-                    "Party Name (Choose or type new)",
-                    options=stored_party_names,
-                    index=None,
-                    placeholder="Search saved names or type new...",
-                    accept_new_options=True,
-                    key="qa_party_select",
-                )
-
-            if st.button("💾 Apply Party Name to Selected Transaction", type="primary", use_container_width=True, key="qa_apply_btn"):
-                clean_name = clean_text(selected_party_choice).strip()
-                if selected_txn_fp and clean_name:
-                    target_fps = [selected_txn_fp]
-                    count_assigned = assign_party_name_to_transactions(target_fps, clean_name, combined, sb_client)
-                    st.session_state["cached_transactions"] = combined
-                    st.toast(f"Assigned '{clean_name}' to selected transaction!", icon="✅")
-                    st.rerun()
-                elif not clean_name:
-                    st.warning("Please enter or select a party name.")
 
         with st.expander(f"📁 Stored Party Names ({len(stored_party_names)})"):
             st.markdown("**Directory of stored party names used for auto-completion suggestions.**")
