@@ -1044,27 +1044,257 @@ def inject_keyboard_shortcuts() -> None:
 
 
 def inject_party_autocomplete(stored_party_names: list[str]) -> None:
-    """Safely remove any rogue DOM popup or keydown listeners to ensure native typing accuracy."""
-    if components is None:
+    """Inject a non-intrusive, precise autocomplete suggestion popup for Party Name editing in Glide Data Grid."""
+    if components is None or not stored_party_names:
         return
-    html_code = """
+
+    clean_names = sorted(list(set(clean_text(n).strip() for n in stored_party_names if clean_text(n).strip())))
+    if not clean_names:
+        return
+
+    names_json = json.dumps(clean_names)
+
+    html_code = f"""
     <script>
-    (function() {
-        try {
+    (function() {{
+        try {{
             const parentDoc = window.parent.document;
             if (!parentDoc) return;
-            const popup = parentDoc.getElementById('sh-party-ac-popup');
-            if (popup) popup.remove();
-            if (parentDoc._shPartyAcInputHandler) {
+
+            const partyList = {names_json};
+
+            let popup = parentDoc.getElementById('sh-party-ac-popup');
+            if (!popup) {{
+                popup = parentDoc.createElement('div');
+                popup.id = 'sh-party-ac-popup';
+                popup.style.cssText = 'position: absolute; display: none; z-index: 99999999; background: #181825; border: 1px solid #45475a; border-radius: 8px; box-shadow: 0 12px 30px rgba(0,0,0,0.65); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; overflow: hidden;';
+                parentDoc.body.appendChild(popup);
+            }}
+
+            let activeInput = null;
+            let currentMatches = [];
+            let keyboardSelectedIdx = -1;
+
+            function hidePopup() {{
+                if (popup) popup.style.display = 'none';
+                currentMatches = [];
+                keyboardSelectedIdx = -1;
+            }}
+
+            function escapeHtml(str) {{
+                return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            }}
+
+            function applySuggestion(input, val) {{
+                if (!input) return;
+                try {{
+                    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+                        || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                    if (setter) {{
+                        setter.call(input, val);
+                    }} else {{
+                        input.value = val;
+                    }}
+                    if (input._valueTracker) {{
+                        input._valueTracker.setValue('');
+                    }}
+                    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }} catch(err) {{
+                    input.value = val;
+                }}
+                hidePopup();
+                input.focus();
+                // Commit the cell in Glide Data Grid cleanly
+                setTimeout(() => {{
+                    try {{
+                        input.dispatchEvent(new KeyboardEvent('keydown', {{
+                            key: 'Enter',
+                            code: 'Enter',
+                            keyCode: 13,
+                            which: 13,
+                            bubbles: true,
+                            cancelable: true
+                        }}));
+                    }} catch(e) {{}}
+                }}, 25);
+            }}
+
+            function updateKeyboardHighlight(newIdx) {{
+                keyboardSelectedIdx = newIdx;
+                const items = popup.querySelectorAll('.sh-ac-item');
+                items.forEach((it, i) => {{
+                    if (i === keyboardSelectedIdx) {{
+                        it.style.background = '#313244';
+                        it.style.color = '#89b4fa';
+                        it.scrollIntoView({{ block: 'nearest' }});
+                    }} else {{
+                        it.style.background = 'transparent';
+                        it.style.color = '#cdd6f4';
+                    }}
+                }});
+            }}
+
+            function renderSuggestions(input, matches) {{
+                currentMatches = matches;
+                keyboardSelectedIdx = -1;
+                popup.innerHTML = '';
+
+                const header = parentDoc.createElement('div');
+                header.style.cssText = 'padding: 6px 12px; font-size: 11px; color: #a6adc8; border-bottom: 1px solid #313244; background: #11111b; font-weight: 600; display: flex; justify-content: space-between; align-items: center;';
+                header.innerHTML = '<span>🏷️ Saved Party Suggestions</span><span style="font-size:10px; opacity:0.7;">(Click or ↓ then Enter)</span>';
+                popup.appendChild(header);
+
+                const listContainer = parentDoc.createElement('div');
+                listContainer.style.cssText = 'max-height: 220px; overflow-y: auto;';
+
+                matches.forEach((name, idx) => {{
+                    const item = parentDoc.createElement('div');
+                    item.className = 'sh-ac-item';
+                    item.dataset.idx = idx;
+                    item.style.cssText = 'padding: 8px 12px; cursor: pointer; color: #cdd6f4; font-size: 13px; border-bottom: 1px solid #27273a; transition: background 0.1s ease; display: flex; align-items: center; justify-content: space-between;';
+                    item.innerHTML = `<span><span style="color:#89b4fa;margin-right:8px;">🏷️</span><b>${{escapeHtml(name)}}</b></span><span style="font-size:10px;color:#6c7086;background:#242438;padding:2px 6px;border-radius:4px;">↵ Select</span>`;
+
+                    // Mouse hover ONLY changes visual styling - does NOT alter keyboardSelectedIdx
+                    item.addEventListener('mouseenter', () => {{
+                        const allItems = popup.querySelectorAll('.sh-ac-item');
+                        allItems.forEach(it => {{
+                            if (it === item) {{
+                                it.style.background = '#313244';
+                                it.style.color = '#89b4fa';
+                            }} else if (parseInt(it.dataset.idx) !== keyboardSelectedIdx) {{
+                                it.style.background = 'transparent';
+                                it.style.color = '#cdd6f4';
+                            }}
+                        }});
+                    }});
+
+                    item.addEventListener('mouseleave', () => {{
+                        if (parseInt(item.dataset.idx) !== keyboardSelectedIdx) {{
+                            item.style.background = 'transparent';
+                            item.style.color = '#cdd6f4';
+                        }}
+                    }});
+
+                    item.addEventListener('mousedown', (e) => {{
+                        e.preventDefault();
+                        e.stopPropagation();
+                        applySuggestion(input, name);
+                    }});
+
+                    listContainer.appendChild(item);
+                }});
+
+                popup.appendChild(listContainer);
+
+                // Precise positioning below active input
+                const rect = input.getBoundingClientRect();
+                const parentWin = window.parent;
+                const scrollTop = parentWin.pageYOffset || parentDoc.documentElement.scrollTop;
+                const scrollLeft = parentWin.pageXOffset || parentDoc.documentElement.scrollLeft;
+
+                popup.style.top = (rect.bottom + scrollTop + 4) + 'px';
+                popup.style.left = Math.max(10, rect.left + scrollLeft) + 'px';
+                popup.style.minWidth = Math.max(rect.width, 300) + 'px';
+                popup.style.maxWidth = '500px';
+                popup.style.display = 'block';
+            }}
+
+            function onInputChange(e) {{
+                const input = e.target;
+                if (!input) return;
+                const isGdg = input.classList && (input.classList.contains('gdg-input') || input.classList.contains('gdg-md-edit-textarea'));
+                const isText = input.tagName === 'TEXTAREA' || (input.tagName === 'INPUT' && input.type === 'text');
+                if (!isGdg && !isText) return;
+
+                activeInput = input;
+                const q = (input.value || '').trim().toLowerCase();
+                if (q.length < 1) {{
+                    hidePopup();
+                    return;
+                }}
+
+                // Prefix matches first, then substring matches
+                const exactStart = [];
+                const contains = [];
+                for (let i = 0; i < partyList.length; i++) {{
+                    const p = partyList[i];
+                    const pLower = p.toLowerCase();
+                    if (pLower.startsWith(q)) {{
+                        exactStart.push(p);
+                    }} else if (pLower.includes(q)) {{
+                        contains.push(p);
+                    }}
+                    if (exactStart.length + contains.length >= 24) break;
+                }}
+                const matches = exactStart.concat(contains).slice(0, 8);
+                if (!matches.length) {{
+                    hidePopup();
+                    return;
+                }}
+
+                renderSuggestions(input, matches);
+            }}
+
+            function onKeyDown(e) {{
+                if (!popup || popup.style.display !== 'block' || !currentMatches.length) return;
+
+                if (e.key === 'ArrowDown') {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const next = (keyboardSelectedIdx + 1) % currentMatches.length;
+                    updateKeyboardHighlight(next);
+                }} else if (e.key === 'ArrowUp') {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const prev = (keyboardSelectedIdx - 1 + currentMatches.length) % currentMatches.length;
+                    updateKeyboardHighlight(prev);
+                }} else if ((e.key === 'Enter' || e.key === 'Tab') && keyboardSelectedIdx >= 0) {{
+                    // ONLY intercept Enter if user explicitly navigated down using arrow keys
+                    e.preventDefault();
+                    e.stopPropagation();
+                    applySuggestion(activeInput, currentMatches[keyboardSelectedIdx]);
+                }} else if (e.key === 'Escape') {{
+                    hidePopup();
+                }} else if (e.key === 'Enter') {{
+                    // User typed free text and pressed Enter without selecting a suggestion:
+                    // Hide popup immediately and let Enter pass through cleanly to Glide Data Grid!
+                    hidePopup();
+                }}
+            }}
+
+            // Clean up prior listeners before re-attaching
+            if (parentDoc._shPartyAcInputHandler) {{
                 parentDoc.removeEventListener('input', parentDoc._shPartyAcInputHandler, true);
                 parentDoc.removeEventListener('keydown', parentDoc._shPartyAcKeyHandler, true);
                 parentDoc.removeEventListener('click', parentDoc._shPartyAcClickHandler, true);
-                delete parentDoc._shPartyAcInputHandler;
-                delete parentDoc._shPartyAcKeyHandler;
-                delete parentDoc._shPartyAcClickHandler;
-            }
-        } catch(e) {}
-    })();
+                parentDoc.removeEventListener('scroll', parentDoc._shPartyAcScrollHandler, true);
+            }}
+
+            parentDoc._shPartyAcInputHandler = onInputChange;
+            parentDoc._shPartyAcKeyHandler = onKeyDown;
+            parentDoc._shPartyAcClickHandler = (e) => {{
+                if (popup && popup.style.display === 'block') {{
+                    if (!popup.contains(e.target) && e.target !== activeInput) {{
+                        hidePopup();
+                    }}
+                }}
+            }};
+            parentDoc._shPartyAcScrollHandler = () => {{
+                if (popup && popup.style.display === 'block') {{
+                    hidePopup();
+                }}
+            }};
+
+            parentDoc.addEventListener('input', parentDoc._shPartyAcInputHandler, true);
+            parentDoc.addEventListener('keydown', parentDoc._shPartyAcKeyHandler, true);
+            parentDoc.addEventListener('click', parentDoc._shPartyAcClickHandler, true);
+            parentDoc.addEventListener('scroll', parentDoc._shPartyAcScrollHandler, true);
+
+        }} catch(err) {{
+            console.error('StatementHub Party Autocomplete Error:', err);
+        }}
+    }})();
     </script>
     """
     components.html(html_code, height=0, width=0)
@@ -2143,7 +2373,7 @@ def app() -> None:
         stored_party_names = load_stored_party_names(sb_client, combined)
 
         st.subheader(f"Results ({len(results):,})")
-        st.caption("💡 Double-click or press Enter on any transaction's **Party Name** cell to enter party name. Use the **Sort by Date** filter above to sort chronologically.")
+        st.caption("💡 Double-click or press Enter on any transaction's **Party Name** cell to enter party name (matching saved names will appear as you type). Use the **Sort by Date** filter above to sort chronologically.")
 
         render_bank_color_legend(results)
 
