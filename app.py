@@ -2538,8 +2538,7 @@ def app() -> None:
 
             if updated_count > 0:
                 st.session_state["cached_transactions"] = combined
-                if editor_key in st.session_state:
-                    st.session_state[editor_key] = {"edited_rows": {}, "added_rows": [], "deleted_rows": []}
+                st.session_state["editor_view_id"] = st.session_state.get("editor_view_id", 0) + 1
                 st.toast(f"Saved party name for {updated_count} transaction{'s' if updated_count > 1 else ''}.", icon="✅")
                 st.rerun()
 
