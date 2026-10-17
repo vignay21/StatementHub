@@ -2283,6 +2283,7 @@ def app() -> None:
     tab_search, tab_profit = st.tabs(["🔎 Unified Transaction Search", "💰 Monthly Profit & Cash Flow"])
 
     with tab_search:
+        stored_party_names = load_stored_party_names(sb_client, combined)
         # Filters: Bank Account, Time Period & Chronological Sorting
         filter_col1, filter_col2, filter_col3 = st.columns([1.5, 1.5, 1.2])
         with filter_col1:
