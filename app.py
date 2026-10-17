@@ -2538,7 +2538,10 @@ def app() -> None:
 
             if updated_count > 0:
                 st.session_state["cached_transactions"] = combined
+                if editor_key in st.session_state:
+                    st.session_state[editor_key] = {"edited_rows": {}, "added_rows": [], "deleted_rows": []}
                 st.toast(f"Saved party name for {updated_count} transaction{'s' if updated_count > 1 else ''}.", icon="✅")
+                st.rerun()
 
         with st.expander("⚡ Quick Assign Party Name (Searchable Dropdown)"):
             st.markdown("**Quickly assign or correct a party name for any transaction using saved names or a new name.**")
