@@ -869,8 +869,8 @@ def sort_dataframe_by_date(df: pd.DataFrame, ascending: bool = False) -> pd.Data
 
 
 def search_transactions(transactions: pd.DataFrame, query: str, mode: str) -> pd.DataFrame:
-    """Search exactly one selected category: UTR/reference, date, or amount."""
-    query = clean_text(query)
+    """Search by category: universal keywords, description, party name, UTR, date, or amount."""
+    query = clean_text(query).strip()
     if not query:
         return transactions.copy()
 
@@ -889,6 +889,22 @@ def search_transactions(transactions: pd.DataFrame, query: str, mode: str) -> pd
         if amount is not None:
             return transactions[(transactions["Amount"] - amount).abs().le(0.005)].copy()
         return transactions[transactions["Amount"].astype(str).str.contains(re.escape(query), na=False)].copy()
+
+    if mode == "description":
+        return transactions[transactions["Description"].fillna("").str.contains(re.escape(query), case=False, regex=True)].copy()
+
+    if mode == "party":
+        return transactions[transactions["Party Name"].fillna("").str.contains(re.escape(query), case=False, regex=True)].copy()
+
+    if mode == "all":
+        mask = (
+            transactions["Description"].fillna("").str.contains(re.escape(query), case=False, regex=True)
+            | transactions["Party Name"].fillna("").str.contains(re.escape(query), case=False, regex=True)
+            | transactions["UTR / Reference"].fillna("").str.contains(re.escape(query), case=False, regex=True)
+            | transactions["Bank"].fillna("").str.contains(re.escape(query), case=False, regex=True)
+            | transactions["Date"].fillna("").str.contains(re.escape(query), case=False, regex=True)
+        )
+        return transactions[mask].copy()
 
     utr_mask = (
         transactions["UTR / Reference"].fillna("").str.contains(re.escape(query), case=False, regex=True)
@@ -1290,6 +1306,28 @@ def inject_party_autocomplete(stored_party_names: list[str]) -> None:
             parentDoc.addEventListener('keydown', parentDoc._shPartyAcKeyHandler, true);
             parentDoc.addEventListener('click', parentDoc._shPartyAcClickHandler, true);
             parentDoc.addEventListener('scroll', parentDoc._shPartyAcScrollHandler, true);
+
+            // Prevent client-side column header click-to-sort on Glide Data Grid canvas,
+            // which causes visual-vs-dataframe row index misalignment on edits.
+            function preventCanvasHeaderSort(e) {{
+                const target = e.target;
+                if (!target || target.tagName !== 'CANVAS') return;
+                const rect = target.getBoundingClientRect();
+                const offsetY = e.clientY - rect.top;
+                if (offsetY >= 0 && offsetY <= 40) {{
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    e.preventDefault();
+                }}
+            }}
+
+            if (parentDoc._shCanvasHeaderSortHandler) {{
+                parentDoc.removeEventListener('click', parentDoc._shCanvasHeaderSortHandler, true);
+                parentDoc.removeEventListener('mousedown', parentDoc._shCanvasHeaderSortHandler, true);
+            }}
+            parentDoc._shCanvasHeaderSortHandler = preventCanvasHeaderSort;
+            parentDoc.addEventListener('click', parentDoc._shCanvasHeaderSortHandler, true);
+            parentDoc.addEventListener('mousedown', parentDoc._shCanvasHeaderSortHandler, true);
 
         }} catch(err) {{
             console.error('StatementHub Party Autocomplete Error:', err);
@@ -2258,10 +2296,15 @@ def app() -> None:
             selected_period = st.selectbox("Period", options=period_options, index=0)
         with filter_col3:
             sort_order = st.selectbox(
-                "Sort by Date",
-                options=["Newest First (Latest)", "Oldest First"],
+                "Sort Order",
+                options=[
+                    "Date: Newest First (Latest)",
+                    "Date: Oldest First",
+                    "Amount: Highest First",
+                    "Amount: Lowest First",
+                ],
                 index=0,
-                help="Order transactions chronologically by date",
+                help="Order transactions chronologically or by amount",
             )
 
         custom_start_date = None
@@ -2334,8 +2377,15 @@ def app() -> None:
         if info_notes:
             st.caption("💡 " + " | ".join(info_notes))
 
-        search_modes = {"UTR / Reference": "utr", "Date": "date", "Amount": "amount"}
-        selected_mode = st.radio("Search by", list(search_modes.keys()), horizontal=True)
+        search_modes = {
+            "All / Keyword (Universal)": "all",
+            "Description / Narration": "description",
+            "Party Name": "party",
+            "UTR / Reference": "utr",
+            "Date": "date",
+            "Amount": "amount",
+        }
+        selected_mode = st.radio("Search by", list(search_modes.keys()), horizontal=True, index=0)
         mode = search_modes[selected_mode]
 
         if mode == "utr":
@@ -2355,16 +2405,41 @@ def app() -> None:
         elif mode == "date":
             effective_query = st.text_input(
                 "Search Date",
-                placeholder="Enter date (e.g. 07-10-2026, 10-2026, or 2026)",
+                placeholder="Enter date (e.g. 12-10-2026, 10-2026, or 2026)",
             ).strip()
-        else:  # amount
+        elif mode == "amount":
             effective_query = st.text_input(
                 "Search Amount",
-                placeholder="Enter amount (e.g. 25000, 25,000, or ₹25,000)",
+                placeholder="Enter amount (e.g. 90, 25000, or ₹25,000)",
+            ).strip()
+        elif mode == "description":
+            effective_query = st.text_input(
+                "Search Description / Narration",
+                placeholder="Enter keywords (e.g. BHARAT CONNECT, LUPIN, SALARY, ELECTRICITY)",
+            ).strip()
+        elif mode == "party":
+            effective_query = st.selectbox(
+                "Search by Saved Party Name",
+                options=stored_party_names,
+                index=None,
+                placeholder="Select or start typing party name...",
+                accept_new_options=True,
+            ) or ""
+        else:  # all
+            effective_query = st.text_input(
+                "Universal Search (All Fields)",
+                placeholder="Search across all fields (narration, party name, UTR, bank, amount...)",
             ).strip()
 
         results = search_transactions(filtered_df, effective_query, mode)
-        results = sort_dataframe_by_date(results, ascending=(sort_order == "Oldest First"))
+        if sort_order == "Date: Oldest First":
+            results = sort_dataframe_by_date(results, ascending=True)
+        elif sort_order == "Amount: Highest First":
+            results = results.sort_values(by="Amount", ascending=False).reset_index(drop=True)
+        elif sort_order == "Amount: Lowest First":
+            results = results.sort_values(by="Amount", ascending=True).reset_index(drop=True)
+        else:
+            results = sort_dataframe_by_date(results, ascending=False)
 
         result_ids = results[results["UTR / Reference"] != ""]["UTR / Reference"]
         duplicated = result_ids[result_ids.duplicated(keep=False)].unique().tolist()
@@ -2373,7 +2448,7 @@ def app() -> None:
         stored_party_names = load_stored_party_names(sb_client, combined)
 
         st.subheader(f"Results ({len(results):,})")
-        st.caption("💡 Double-click or press Enter on any transaction's **Party Name** cell to enter party name (matching saved names will appear as you type). Use the **Sort by Date** filter above to sort chronologically.")
+        st.caption("💡 Double-click or press Enter on any transaction's **Party Name** cell to enter party name (matching saved names will appear as you type). Use the **Sort Order** filter above to sort.")
 
         render_bank_color_legend(results)
 
@@ -2447,13 +2522,13 @@ def app() -> None:
 
         editor_state = st.session_state.get(editor_key, {})
         edited_rows = editor_state.get("edited_rows", {})
-        if not changes_by_fp and edited_rows:
+        if not changes_by_fp and edited_rows and "_fingerprint" in display_df.columns:
             for idx_raw, col_edits in edited_rows.items():
                 if "Party Name" in col_edits:
                     try:
                         row_idx = int(idx_raw)
-                        if 0 <= row_idx < len(results):
-                            fp = str(results.iloc[row_idx]["fingerprint"]).strip()
+                        if 0 <= row_idx < len(display_df):
+                            fp = str(display_df.iloc[row_idx]["_fingerprint"]).strip()
                             new_val = clean_text(col_edits["Party Name"]).strip()
                             old_val = orig_party_map.get(fp, "")
                             if fp and new_val != old_val:
