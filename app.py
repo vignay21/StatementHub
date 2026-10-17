@@ -818,14 +818,7 @@ def apply_assignments(transactions: pd.DataFrame, assignments: dict[str, Any] = 
     else:
         transactions["Party Name"] = transactions["Party Name"].fillna("").astype(str).str.strip()
 
-    # Backwards compatibility: if a row's Party Name is empty, populate from legacy overrides if present
-    if assignments:
-        empty_mask = transactions["Party Name"].eq("")
-        if empty_mask.any():
-            overrides = transactions.loc[empty_mask, "Transaction key"].map(assignments.get("transaction_overrides", {})).fillna("")
-            mapped = transactions.loc[empty_mask, "Party match key"].map(assignments.get("party_mappings", {})).fillna("")
-            legacy_names = overrides.where(overrides.ne(""), mapped)
-            transactions.loc[empty_mask, "Party Name"] = legacy_names.fillna("")
+    # Auto party mapping is completely disabled. Party names are only mapped manually by the user.
 
     transactions["Assigned Business / Party Name"] = transactions["Party Name"]
     return transactions
@@ -2574,31 +2567,16 @@ def app() -> None:
                     key="qa_party_select",
                 )
 
-            qa_btn_col, qa_match_col = st.columns([1.5, 3.5], vertical_alignment="center")
-            with qa_match_col:
-                apply_to_all_matching = st.checkbox(
-                    "Also apply to all transactions with identical narration / counterparty",
-                    value=False,
-                    key="qa_apply_matching",
-                )
-            with qa_btn_col:
-                if st.button("💾 Apply Party Name", type="primary", use_container_width=True, key="qa_apply_btn"):
-                    clean_name = clean_text(selected_party_choice).strip()
-                    if selected_txn_fp and clean_name:
-                        target_fps = [selected_txn_fp]
-                        if apply_to_all_matching:
-                            matched_desc = results.loc[results["fingerprint"] == selected_txn_fp, "Description"].values
-                            if len(matched_desc) > 0:
-                                d_val = matched_desc[0]
-                                extra_fps = combined.loc[combined["Description"] == d_val, "fingerprint"].dropna().tolist()
-                                target_fps = list(set(target_fps + extra_fps))
-
-                        count_assigned = assign_party_name_to_transactions(target_fps, clean_name, combined, sb_client)
-                        st.session_state["cached_transactions"] = combined
-                        st.toast(f"Assigned '{clean_name}' to {count_assigned} transaction{'s' if count_assigned > 1 else ''}!", icon="✅")
-                        st.rerun()
-                    elif not clean_name:
-                        st.warning("Please enter or select a party name.")
+            if st.button("💾 Apply Party Name to Selected Transaction", type="primary", use_container_width=True, key="qa_apply_btn"):
+                clean_name = clean_text(selected_party_choice).strip()
+                if selected_txn_fp and clean_name:
+                    target_fps = [selected_txn_fp]
+                    count_assigned = assign_party_name_to_transactions(target_fps, clean_name, combined, sb_client)
+                    st.session_state["cached_transactions"] = combined
+                    st.toast(f"Assigned '{clean_name}' to selected transaction!", icon="✅")
+                    st.rerun()
+                elif not clean_name:
+                    st.warning("Please enter or select a party name.")
 
         with st.expander(f"📁 Stored Party Names ({len(stored_party_names)})"):
             st.markdown("**Directory of stored party names used for auto-completion suggestions.**")
