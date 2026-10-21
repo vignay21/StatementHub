@@ -63,6 +63,11 @@ create table if not exists party_mappings (
 -- 3. Security: Enable Row Level Security (RLS) to prevent unauthorized public access
 alter table public.transactions enable row level security;
 alter table public.party_mappings enable row level security;
+
+-- 4. Permissions: Explicitly grant access to service_role (StatementHub backend)
+grant all on table public.transactions to service_role;
+grant all on table public.party_mappings to service_role;
+grant all on all sequences in schema public to service_role;
 """
 
 
