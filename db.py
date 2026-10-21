@@ -59,6 +59,10 @@ create table if not exists party_mappings (
     party_name text not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+
+-- 3. Security: Enable Row Level Security (RLS) to prevent unauthorized public access
+alter table public.transactions enable row level security;
+alter table public.party_mappings enable row level security;
 """
 
 
