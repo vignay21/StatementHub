@@ -2382,9 +2382,6 @@ def app() -> None:
             st.caption("💡 " + " | ".join(info_notes))
 
         search_modes = {
-            "All / Keyword (Universal)": "all",
-            "Description / Narration": "description",
-            "Party Name": "party",
             "UTR / Reference": "utr",
             "Date": "date",
             "Amount": "amount",
@@ -2411,28 +2408,10 @@ def app() -> None:
                 "Search Date",
                 placeholder="Enter date (e.g. 12-10-2026, 10-2026, or 2026)",
             ).strip()
-        elif mode == "amount":
+        else:  # amount
             effective_query = st.text_input(
                 "Search Amount",
                 placeholder="Enter amount (e.g. 90, 25000, or ₹25,000)",
-            ).strip()
-        elif mode == "description":
-            effective_query = st.text_input(
-                "Search Description / Narration",
-                placeholder="Enter keywords (e.g. BHARAT CONNECT, LUPIN, SALARY, ELECTRICITY)",
-            ).strip()
-        elif mode == "party":
-            effective_query = st.selectbox(
-                "Search by Saved Party Name",
-                options=stored_party_names,
-                index=None,
-                placeholder="Select or start typing party name...",
-                accept_new_options=True,
-            ) or ""
-        else:  # all
-            effective_query = st.text_input(
-                "Universal Search (All Fields)",
-                placeholder="Search across all fields (narration, party name, UTR, bank, amount...)",
             ).strip()
 
         results = search_transactions(filtered_df, effective_query, mode)
