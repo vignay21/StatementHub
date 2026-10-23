@@ -897,7 +897,10 @@ def search_transactions(transactions: pd.DataFrame, query: str, mode: str) -> pd
         return transactions[transactions["Description"].fillna("").str.contains(re.escape(query), case=False, regex=True)].copy()
 
     if mode == "party":
-        return transactions[transactions["Party Name"].fillna("").str.contains(re.escape(query), case=False, regex=True)].copy()
+        query_strip = query.strip()
+        if query_strip == "[⚠️ Unassigned / Blank Party]":
+            return transactions[transactions["Party Name"].fillna("").str.strip().eq("")].copy()
+        return transactions[transactions["Party Name"].fillna("").str.contains(re.escape(query_strip), case=False, regex=True)].copy()
 
     if mode == "all":
         mask = (
@@ -2415,12 +2418,13 @@ def app() -> None:
                 placeholder="Enter amount (e.g. 90, 25000, or ₹25,000)",
             ).strip()
         else:  # party
+            party_options = ["[⚠️ Unassigned / Blank Party]"] + stored_party_names
             effective_query = st.selectbox(
                 "Search by Saved Party Name",
-                options=stored_party_names,
+                options=party_options,
                 index=None,
                 placeholder="Select or start typing party name...",
-                accept_new_options=True,
+                key="party_search_select",
             ) or ""
 
         results = search_transactions(filtered_df, effective_query, mode)
