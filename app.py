@@ -1225,9 +1225,23 @@ def inject_party_autocomplete(stored_party_names: list[str]) -> None:
             function onInputChange(e) {{
                 const input = e.target;
                 if (!input) return;
-                const isGdg = input.classList && (input.classList.contains('gdg-input') || input.classList.contains('gdg-md-edit-textarea'));
-                const isText = input.tagName === 'TEXTAREA' || (input.tagName === 'INPUT' && input.type === 'text');
-                if (!isGdg && !isText) return;
+
+                // STRICT CHECK: Never attach to Streamlit native widgets (selectbox, text_input, etc.)
+                if (input.closest && input.closest('[data-testid="stSelectbox"], [data-testid="stTextInput"], [data-baseweb="select"], [data-baseweb="input"], .stSelectbox, .stTextInput')) {{
+                    hidePopup();
+                    return;
+                }}
+
+                // ONLY attach to Glide Data Grid cell editing in the table
+                const isGdg = input.classList && (
+                    input.classList.contains('gdg-input') || 
+                    input.classList.contains('gdg-md-edit-textarea')
+                );
+                const isInsideDataEditor = input.closest && input.closest('[data-testid="stDataEditor"], [data-testid="stDataFrame"], .gdg-style, .glide-data-grid');
+                if (!isGdg && !isInsideDataEditor) {{
+                    hidePopup();
+                    return;
+                }}
 
                 activeInput = input;
                 const q = (input.value || '').trim().toLowerCase();
@@ -1260,6 +1274,10 @@ def inject_party_autocomplete(stored_party_names: list[str]) -> None:
 
             function onKeyDown(e) {{
                 if (!popup || popup.style.display !== 'block' || !currentMatches.length) return;
+                if (!activeInput || (activeInput.closest && activeInput.closest('[data-testid="stSelectbox"], [data-testid="stTextInput"], [data-baseweb="select"], [data-baseweb="input"], .stSelectbox, .stTextInput'))) {{
+                    hidePopup();
+                    return;
+                }}
 
                 if (e.key === 'ArrowDown') {{
                     e.preventDefault();
