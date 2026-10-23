@@ -2385,6 +2385,7 @@ def app() -> None:
             "UTR / Reference": "utr",
             "Date": "date",
             "Amount": "amount",
+            "Party Name": "party",
         }
         selected_mode = st.radio("Search by", list(search_modes.keys()), horizontal=True, index=0)
         mode = search_modes[selected_mode]
@@ -2408,11 +2409,19 @@ def app() -> None:
                 "Search Date",
                 placeholder="Enter date (e.g. 12-10-2026, 10-2026, or 2026)",
             ).strip()
-        else:  # amount
+        elif mode == "amount":
             effective_query = st.text_input(
                 "Search Amount",
                 placeholder="Enter amount (e.g. 90, 25000, or ₹25,000)",
             ).strip()
+        else:  # party
+            effective_query = st.selectbox(
+                "Search by Saved Party Name",
+                options=stored_party_names,
+                index=None,
+                placeholder="Select or start typing party name...",
+                accept_new_options=True,
+            ) or ""
 
         results = search_transactions(filtered_df, effective_query, mode)
         if sort_order == "Date: Oldest First":
