@@ -2499,10 +2499,6 @@ def app() -> None:
         else:
             results = sort_dataframe_by_date(results, ascending=False)
 
-        result_ids = results[results["UTR / Reference"] != ""]["UTR / Reference"]
-        duplicated = result_ids[result_ids.duplicated(keep=False)].unique().tolist()
-        if duplicated:
-            st.warning(f"Duplicate identifier detected in these results: {', '.join(duplicated[:8])}" + (" …" if len(duplicated) > 8 else ""))
         stored_party_names = load_stored_party_names(sb_client, combined)
 
         st.subheader(f"Results ({len(results):,})")
