@@ -245,6 +245,7 @@ def render_ai_party_assistant_section(
         # Check if user specifically requested review for target fingerprints (e.g. newly uploaded batch)
         target_fps = st.session_state.get("ai_target_fps")
         auto_trigger = st.session_state.pop("ai_auto_trigger", False)
+        reviewed_fps = set(st.session_state.get("ai_reviewed_fps", []))
 
         if target_fps:
             candidate_df = combined_df[combined_df["fingerprint"].isin(target_fps) & unassigned_mask].copy()
@@ -276,25 +277,48 @@ def render_ai_party_assistant_section(
                 st.info("All remaining unassigned transactions are marked as internal transfers or FDs.")
                 return
 
-            batch_records = candidate_df.head(batch_limit).to_dict(orient="records")
+            # Smart Progression: Exclude transactions already reviewed in this session
+            fresh_candidate_df = candidate_df[~candidate_df["fingerprint"].isin(reviewed_fps)].copy()
+
+            if fresh_candidate_df.empty:
+                st.info(
+                    f"🎉 **You have reviewed all {len(candidate_df)} transactions in this session!** "
+                    f"({len(reviewed_fps)} transactions were left unassigned/skipped)."
+                )
+                if st.button("🔄 Reset Reviewed History (Re-evaluate Skipped)", key="btn_reset_reviewed_empty"):
+                    st.session_state["ai_reviewed_fps"] = []
+                    st.rerun()
+                return
+
+            batch_records = fresh_candidate_df.head(batch_limit).to_dict(orient="records")
 
         btn_col, clear_col = st.columns([3, 1], vertical_alignment="bottom")
         with btn_col:
             generate_clicked = st.button(
-                f"✨ Generate AI Suggestions for {len(batch_records)} Transactions",
+                f"✨ Generate AI Suggestions for Next {len(batch_records)} Fresh Transactions",
                 type="primary",
                 use_container_width=True,
                 key="btn_generate_ai_suggestions",
             )
         with clear_col:
-            if st.session_state.get("ai_party_suggestions") or target_fps:
-                if st.button("🗑️ Reset / Clear", use_container_width=True, key="btn_clear_ai_suggestions"):
+            if st.session_state.get("ai_party_suggestions") or target_fps or reviewed_fps:
+                if st.button(
+                    f"🔄 Reset ({len(reviewed_fps)} skipped)" if reviewed_fps and not st.session_state.get("ai_party_suggestions") else "🗑️ Clear / Reset",
+                    use_container_width=True,
+                    key="btn_clear_ai_suggestions",
+                    help="Clears active suggestions and resets the session reviewed history so you can re-check previously skipped transactions.",
+                ):
                     st.session_state["ai_party_suggestions"] = None
+                    st.session_state["ai_reviewed_fps"] = []
                     st.session_state.pop("ai_target_fps", None)
                     st.rerun()
 
         if (generate_clicked or auto_trigger) and batch_records:
             st.session_state.pop("ai_target_fps", None)
+            # Track reviewed fingerprints so the next batch is always fresh
+            batch_fps = [r.get("fingerprint", "") for r in batch_records if r.get("fingerprint")]
+            st.session_state["ai_reviewed_fps"] = list(set(st.session_state.get("ai_reviewed_fps", [])) | set(batch_fps))
+
             with st.spinner(f"🤖 Google Gemini is analyzing {len(batch_records)} statement narrations against your party directory..."):
                 try:
                     suggestions = generate_ai_party_suggestions(
