@@ -242,49 +242,60 @@ def render_ai_party_assistant_section(
                 help="Google AI Studio free tier: 1,500 requests/day",
             )
 
-        col_opt1, col_opt2 = st.columns([2, 1], vertical_alignment="bottom")
-        with col_opt1:
-            batch_limit = st.slider(
-                "Batch size to analyze with AI",
-                min_value=min(5, unassigned_total),
-                max_value=min(100, unassigned_total),
-                value=min(30, unassigned_total),
-                step=5 if unassigned_total >= 10 else 1,
-                help="Process transactions in quick, manageable batches for easy human review.",
-            )
-        with col_opt2:
-            skip_internal = st.checkbox("Skip internal transfers & FDs", value=True)
+        # Check if user specifically requested review for target fingerprints (e.g. newly uploaded batch)
+        target_fps = st.session_state.get("ai_target_fps")
+        auto_trigger = st.session_state.pop("ai_auto_trigger", False)
 
-        # Filter candidate records
-        candidate_df = combined_df[unassigned_mask].copy()
-        if skip_internal:
-            if "Is_Internal" in candidate_df.columns:
-                candidate_df = candidate_df[~candidate_df["Is_Internal"]].copy()
-            if "Is_FD" in candidate_df.columns:
-                candidate_df = candidate_df[~candidate_df["Is_FD"]].copy()
+        if target_fps:
+            candidate_df = combined_df[combined_df["fingerprint"].isin(target_fps) & unassigned_mask].copy()
+            st.info(f"🎯 **Targeting {len(candidate_df)} newly uploaded transactions** for AI review.")
+            batch_records = candidate_df.to_dict(orient="records")
+        else:
+            col_opt1, col_opt2 = st.columns([2, 1], vertical_alignment="bottom")
+            with col_opt1:
+                batch_limit = st.slider(
+                    "Batch size to analyze with AI",
+                    min_value=min(5, unassigned_total),
+                    max_value=min(100, unassigned_total),
+                    value=min(30, unassigned_total),
+                    step=5 if unassigned_total >= 10 else 1,
+                    help="Process transactions in quick, manageable batches for easy human review.",
+                )
+            with col_opt2:
+                skip_internal = st.checkbox("Skip internal transfers & FDs", value=True)
 
-        if candidate_df.empty:
-            st.info("All remaining unassigned transactions are marked as internal transfers or FDs.")
-            return
+            # Filter candidate records
+            candidate_df = combined_df[unassigned_mask].copy()
+            if skip_internal:
+                if "Is_Internal" in candidate_df.columns:
+                    candidate_df = candidate_df[~candidate_df["Is_Internal"]].copy()
+                if "Is_FD" in candidate_df.columns:
+                    candidate_df = candidate_df[~candidate_df["Is_FD"]].copy()
 
-        batch_records = candidate_df.head(batch_limit).to_dict(orient="records")
+            if candidate_df.empty:
+                st.info("All remaining unassigned transactions are marked as internal transfers or FDs.")
+                return
+
+            batch_records = candidate_df.head(batch_limit).to_dict(orient="records")
 
         btn_col, clear_col = st.columns([3, 1], vertical_alignment="bottom")
         with btn_col:
             generate_clicked = st.button(
-                f"✨ Generate AI Suggestions for Next {len(batch_records)} Transactions",
+                f"✨ Generate AI Suggestions for {len(batch_records)} Transactions",
                 type="primary",
                 use_container_width=True,
                 key="btn_generate_ai_suggestions",
             )
         with clear_col:
-            if st.session_state.get("ai_party_suggestions"):
-                if st.button("🗑️ Clear Suggestions", use_container_width=True, key="btn_clear_ai_suggestions"):
+            if st.session_state.get("ai_party_suggestions") or target_fps:
+                if st.button("🗑️ Reset / Clear", use_container_width=True, key="btn_clear_ai_suggestions"):
                     st.session_state["ai_party_suggestions"] = None
+                    st.session_state.pop("ai_target_fps", None)
                     st.rerun()
 
-        if generate_clicked:
-            with st.spinner("🤖 Google Gemini is analyzing statement narrations against your party directory..."):
+        if (generate_clicked or auto_trigger) and batch_records:
+            st.session_state.pop("ai_target_fps", None)
+            with st.spinner(f"🤖 Google Gemini is analyzing {len(batch_records)} statement narrations against your party directory..."):
                 try:
                     suggestions = generate_ai_party_suggestions(
                         unassigned_records=batch_records,

@@ -2264,15 +2264,22 @@ def app() -> None:
             st.error(error)
         if not uploaded_df.empty:
             if sb_client:
-                new_count, skipped_count = db.sync_transactions_with_dedup(sb_client, uploaded_df)
+                sync_res = db.sync_transactions_with_dedup(sb_client, uploaded_df)
+                new_count = sync_res[0]
+                skipped_count = sync_res[1]
+                new_fps = sync_res[2] if len(sync_res) > 2 else []
                 st.session_state["upload_msg"] = (
                     f"Processed {len(uploaded_df):,} transactions from {len(imports)} statement(s): "
                     f"**{new_count:,} new inserted into database**, **{skipped_count:,} duplicates skipped**."
                 )
+                if new_count > 0:
+                    st.session_state["recent_upload_fps"] = new_fps
                 st.session_state["cached_transactions"] = db.fetch_all_transactions(sb_client)
             else:
                 st.session_state["upload_msg"] = f"Loaded {len(uploaded_df):,} transactions from {len(imports)} statement(s)."
                 st.session_state["cached_transactions"] = uploaded_df
+                if "fingerprint" in uploaded_df.columns:
+                    st.session_state["recent_upload_fps"] = uploaded_df["fingerprint"].tolist()
         st.session_state["last_uploaded_signature"] = current_file_signature
 
     if not files and not sb_client:
@@ -2287,6 +2294,33 @@ def app() -> None:
 
     if "upload_msg" in st.session_state and files:
         st.success(st.session_state["upload_msg"])
+
+    recent_fps = st.session_state.get("recent_upload_fps", [])
+    if recent_fps and not combined.empty and "fingerprint" in combined.columns and "Party Name" in combined.columns:
+        recent_unassigned = combined[
+            combined["fingerprint"].isin(recent_fps)
+            & combined["Party Name"].fillna("").astype(str).str.strip().eq("")
+        ].copy()
+        if not recent_unassigned.empty:
+            st.info(
+                f"💡 **{len(recent_unassigned)} newly added transactions** from your upload need party names! "
+                "Would you like AI to suggest party names for only these new transactions?"
+            )
+            col_rev1, col_rev2 = st.columns([3, 1], vertical_alignment="center")
+            with col_rev1:
+                if st.button(
+                    f"✨ Review {len(recent_unassigned)} New Transactions with AI",
+                    type="primary",
+                    key="btn_review_new_upload_ai",
+                ):
+                    st.session_state["ai_target_fps"] = recent_unassigned["fingerprint"].tolist()
+                    st.session_state["ai_auto_trigger"] = True
+                    st.session_state.pop("recent_upload_fps", None)
+                    st.rerun()
+            with col_rev2:
+                if st.button("Skip / I'll Map Later", key="btn_skip_new_upload_ai"):
+                    st.session_state.pop("recent_upload_fps", None)
+                    st.rerun()
 
     if combined.empty:
         if sb_client:

@@ -400,17 +400,17 @@ def reset_gemini_api_usage(client: Client | None = None) -> bool:
     return True
 
 
-def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int, int]:
+def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int, int, list[str]]:
     """Insert new transactions into Supabase, automatically skipping duplicates.
 
     Uses a two-layer deduplication check:
     1. SHA-256 transaction fingerprint.
     2. Bank + Date + Amount + Type + UTR signature (when UTR is non-empty).
 
-    Returns (new_inserted_count, duplicates_skipped_count).
+    Returns (new_inserted_count, duplicates_skipped_count, newly_inserted_fingerprints).
     """
     if df.empty:
-        return 0, 0
+        return 0, 0, []
 
     records: list[dict[str, Any]] = []
     fingerprints: list[str] = []
@@ -502,6 +502,7 @@ def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int,
         to_insert.append(r)
 
     skipped_count = len(records) - len(to_insert)
+    inserted_fps = [r["fingerprint"] for r in to_insert]
 
     if to_insert:
         # Insert in chunks of 100
@@ -509,7 +510,7 @@ def sync_transactions_with_dedup(client: Client, df: pd.DataFrame) -> tuple[int,
             sub_chunk = to_insert[i:i + 100]
             client.table("transactions").insert(sub_chunk).execute()
 
-    return len(to_insert), skipped_count
+    return len(to_insert), skipped_count, inserted_fps
 
 
 def fetch_all_transactions(client: Client, limit: int = 50000) -> pd.DataFrame:
