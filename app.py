@@ -14,7 +14,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
 import pandas as pd
@@ -1533,11 +1533,12 @@ def render_backup_restore_section(combined: pd.DataFrame, assignments: dict[str,
                     "transactions": txns_list,
                 }
                 backup_bytes = json.dumps(backup_data, indent=2, ensure_ascii=False).encode("utf-8")
-                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+                download_date = now_ist.strftime("%d-%m-%Y")
                 st.download_button(
-                    "⬇️ Download System Backup (.json)",
+                    f"⬇️ Download System Backup ({download_date}.json)",
                     data=backup_bytes,
-                    file_name=f"statementhub_backup_{timestamp_str}.json",
+                    file_name=f"statementhub_backup_{download_date}.json",
                     mime="application/json",
                     help="Downloads all transactions and stored party names to a secure JSON file",
                 )
