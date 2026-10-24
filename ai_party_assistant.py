@@ -404,39 +404,46 @@ def render_ai_party_assistant_section(
 
             if apply_clicked and approved_count > 0:
                 approved_rows = edited_preview[edited_preview["Approve"]].copy()
-                saved_count = 0
-                new_parties_introduced: set[str] = set()
 
+                # Group fingerprints by party name for blazing-fast bulk updates
+                fps_by_party: dict[str, list[str]] = {}
                 for _, row in approved_rows.iterrows():
                     fp = str(row.get("_fingerprint", "")).strip()
-                    party_name = str(row.get("Suggested Party", "")).strip().upper()
-                    if fp and party_name:
-                        # Update in combined_df
-                        mask = combined_df["fingerprint"] == fp
-                        combined_df.loc[mask, "Party Name"] = party_name
-                        # Update in Supabase
+                    p_name = str(row.get("Suggested Party", "")).strip().upper()
+                    if fp and p_name:
+                        fps_by_party.setdefault(p_name, []).append(fp)
+
+                saved_count = sum(len(fps) for fps in fps_by_party.values())
+
+                if saved_count > 0:
+                    with st.spinner(f"💾 Saving {saved_count} approved party names to database..."):
+                        # 1. Update in-memory DataFrame
+                        for p_name, fps in fps_by_party.items():
+                            combined_df.loc[combined_df["fingerprint"].isin(fps), "Party Name"] = p_name
+
+                        # 2. Bulk update Supabase in batches per party
                         if sb_client:
-                            db.update_transactions_party_bulk(sb_client, [fp], party_name)
-                        new_parties_introduced.add(party_name)
-                        saved_count += 1
+                            for p_name, fps in fps_by_party.items():
+                                db.update_transactions_party_bulk(sb_client, fps, p_name)
 
-                # Update stored party names directory if any new names were added
-                if new_parties_introduced:
-                    updated_stored = sorted(set(stored_party_names) | new_parties_introduced)
-                    if save_stored_party_names_fn:
-                        save_stored_party_names_fn(updated_stored, sb_client)
-                    elif sb_client:
-                        for p in new_parties_introduced:
-                            try:
-                                db.save_party_name(sb_client, p)
-                            except Exception:
-                                pass
+                        # 3. Update stored party names directory if any new names were added
+                        new_parties = set(fps_by_party.keys()) - set(stored_party_names)
+                        if new_parties:
+                            updated_stored = sorted(set(stored_party_names) | new_parties)
+                            if save_stored_party_names_fn:
+                                save_stored_party_names_fn(updated_stored, sb_client)
+                            elif sb_client:
+                                for p in new_parties:
+                                    try:
+                                        db.save_party_name(sb_client, p)
+                                    except Exception:
+                                        pass
 
-                # Clear AI suggestions, increment expander cycle to collapse shut, and refresh view
-                st.session_state["ai_expander_cycle"] = cycle + 1
-                st.session_state["ai_party_suggestions"] = None
-                st.session_state["cached_transactions"] = combined_df
-                st.session_state["editor_view_id"] = st.session_state.get("editor_view_id", 0) + 1
+                        # 4. Clear AI suggestions, increment expander cycle to collapse shut, and refresh view
+                        st.session_state["ai_expander_cycle"] = cycle + 1
+                        st.session_state["ai_party_suggestions"] = None
+                        st.session_state["cached_transactions"] = combined_df
+                        st.session_state["editor_view_id"] = st.session_state.get("editor_view_id", 0) + 1
 
-                st.toast(f"Successfully applied {saved_count} party names to database!", icon="✅")
-                st.rerun()
+                        st.toast(f"Successfully applied {saved_count} party names to database!", icon="✅")
+                        st.rerun()
