@@ -83,22 +83,24 @@ def generate_ai_party_suggestions(
     ]
 
     clean_stored = sorted(list(set(str(p).strip() for p in stored_party_names if str(p).strip())))
+    clean_stored_map = {p.upper().strip(): p.strip() for p in clean_stored if p.strip()}
 
-    prompt = f"""You are an expert Indian bank statement transaction and party classifier for a business.
-Analyze the following bank transactions and propose the most accurate Party / Vendor Name for each.
+    prompt = f"""You are an expert Indian bank statement transaction and party classifier.
+Analyze the following bank transactions and match them STRICTLY against the Known Party Directory.
 
-Known Party Directory (MANDATORY: If a transaction clearly corresponds to any of these, use the EXACT matching name from this list):
+Known Party Directory (MANDATORY CLOSED SET):
 {json.dumps(clean_stored)}
 
-Classification Rules:
-1. Exact Match: If the narration contains, references, or clearly indicates an existing Known Party, use that EXACT name (e.g., 'UPI-BHARAT CONNECT UTIL...' -> 'ELECTRICITY BILLS', 'MB NEFT Dr ... LUPIN ...' -> 'LUPIN LIMITED', 'BY CASH ...' -> 'CASH DEPOSIT').
-2. Utility Bills: Utility, power, or electricity payments (e.g. Bharat Connect Util, TSNPDCL, TSSPDCL, BESCOM) MUST be mapped to 'ELECTRICITY BILLS'.
-3. Challans / Fines: Traffic e-challan or police challan payments (e.g. Bharat Connect Echa) must be mapped to 'TRAFFIC E-CHALLAN'.
-4. Bank Charges: NEFT/RTGS/IMPS transfer fees or service charges must be mapped to 'NEFT CHARGES'; SMS alert fees to 'SMS CHARGES'.
-5. Cash Transactions: Cash deposits or counter cash credits must be mapped to 'CASH DEPOSIT'.
-6. Internal / Loan Transfers: Home loan EMIs to 'HOME LOAN EMI'.
-7. New Vendors: If a transaction belongs to a genuine business vendor or medical store not in the Known Party Directory, suggest a clean, concise, title-cased name (e.g. 'SUN PHARMACEUTICALS', 'ZYDUS HEALTHCARE') without IFSC codes, account numbers, or reference hashes.
-8. Output Format: Return a strict JSON list of objects matching the schema below.
+CRITICAL INSTRUCTIONS:
+1. STRICT CLOSED-SET ONLY: You must ONLY assign a party name if it exists in the Known Party Directory above.
+2. DO NOT INVENT OR CREATE ANY NEW PARTY NAMES. If a transaction does not clearly match any name in the Known Party Directory, set "suggested_party": "" and "confidence": "Low".
+3. Use exact string matching from the Known Party Directory:
+   - Utility or electricity bills (e.g. UPI Bharat Connect Util, power bills) -> map to 'ELECTRICITY BILLS' (only if present in directory).
+   - Beneficiary payments with vendor names (e.g. Lupin, Dr Reddys, Mankind, pharmacy stores) -> map to their exact matching name in the directory.
+   - Bank charges, NEFT charges, or SMS charges -> map to 'NEFT CHARGES' or 'SMS CHARGES' (only if present in directory).
+   - Cash deposits -> map to 'CASH DEPOSIT' (only if present in directory).
+   - Home loan EMI -> map to 'HOME LOAN EMI' (only if present in directory).
+4. If you are unsure or the vendor/party is not in the directory, return "suggested_party": "" and "reason": "Not in stored party directory".
 
 Transactions to classify:
 {json.dumps(tx_payload)}
@@ -107,7 +109,7 @@ Required JSON schema:
 [
   {{
     "fingerprint": "string matching input fingerprint",
-    "suggested_party": "string (uppercase/title-cased party name)",
+    "suggested_party": "EXACT string from Known Party Directory, or empty string '' if no match",
     "confidence": "High" | "Medium" | "Low",
     "reason": "short explanation (under 12 words)"
   }}
@@ -160,12 +162,21 @@ Required JSON schema:
     for orig in unassigned_records:
         fp = orig.get("fingerprint", "")
         ai_res = results_by_fp.get(fp, {})
-        sugg = (ai_res.get("suggested_party") or "").strip().upper()
+        raw_sugg = (ai_res.get("suggested_party") or "").strip()
         conf = (ai_res.get("confidence") or "Medium").capitalize()
         reason = ai_res.get("reason") or "AI analyzed narration"
 
-        # Default approval to True for High & Medium confidence, False for Low or blank
-        approved_default = bool(sugg and conf in ["High", "Medium"])
+        # STRICT ENFORCEMENT: Only allow names from the stored party directory
+        canonical = clean_stored_map.get(raw_sugg.upper(), "")
+        if canonical:
+            sugg = canonical
+            approved_default = bool(conf in ["High", "Medium"])
+        else:
+            # If not in the stored directory, leave blank for manual assignment
+            sugg = ""
+            conf = "Low"
+            reason = "Not in stored party directory (Manual mapping needed)"
+            approved_default = False
 
         enriched.append({
             "Approve": approved_default,
@@ -286,7 +297,9 @@ def render_ai_party_assistant_section(
             st.divider()
             st.markdown("#### 📋 Review & Approve AI Suggestions")
             st.caption(
-                "Review the suggestions below. You can **check/uncheck** rows, or **double-click** the 'Suggested Party' cell to edit any name before saving. Nothing is saved until you click **Apply Approved**."
+                "💡 **Strict Closed-Set Matching:** AI strictly matches against your **Stored Party Directory** and never creates new party names. "
+                "Any transaction not matching your saved list is left blank for you to map manually. "
+                "Review the suggestions below, toggle checkboxes, or edit names before clicking **Apply Approved**."
             )
 
             preview_df = pd.DataFrame(suggestions_data)
