@@ -206,7 +206,8 @@ def render_ai_party_assistant_section(
             st.success("🎉 All transactions in your statement currently have assigned party names! No unassigned transactions found.")
             return
 
-        col_stat1, col_stat2, col_stat3 = st.columns(3)
+        usage = db.get_gemini_api_usage(sb_client)
+        col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
         with col_stat1:
             st.metric("Unassigned Transactions", f"{unassigned_total:,}")
         with col_stat2:
@@ -215,6 +216,14 @@ def render_ai_party_assistant_section(
             # Check for internal transfers/FDs
             internal_count = int((unassigned_mask & (combined_df.get("Is_Internal", False) | combined_df.get("Is_FD", False))).sum())
             st.metric("Internal Transfers / FDs", f"{internal_count:,}", help="Excluded from operating vendor mapping by default")
+        with col_stat4:
+            st.metric(
+                "Gemini Requests Left",
+                f"{usage['remaining_today']:,}",
+                delta=f"{usage['requests_today']:,} used today",
+                delta_color="normal",
+                help="Google AI Studio free tier: 1,500 requests/day",
+            )
 
         col_opt1, col_opt2 = st.columns([2, 1], vertical_alignment="bottom")
         with col_opt1:
