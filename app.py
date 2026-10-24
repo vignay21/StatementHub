@@ -2403,6 +2403,15 @@ def app() -> None:
         if info_notes:
             st.caption("💡 " + " | ".join(info_notes))
 
+        # AI Party Name Assistant (Review & Auto-Suggest)
+        from ai_party_assistant import render_ai_party_assistant_section
+        render_ai_party_assistant_section(
+            combined,
+            stored_party_names,
+            sb_client,
+            save_stored_party_names_fn=save_stored_party_names,
+        )
+
         search_modes = {
             "UTR / Reference": "utr",
             "Date": "date",
