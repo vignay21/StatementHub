@@ -208,7 +208,13 @@ def render_ai_party_assistant_section(
     unassigned_mask = combined_df["Party Name"].fillna("").astype(str).str.strip().eq("")
     unassigned_total = int(unassigned_mask.sum())
 
-    with st.expander(f"✨ AI Party Name Assistant ({unassigned_total:,} Unassigned Transactions)", expanded=False):
+    # Cycle counter forces Streamlit expander to collapse shut when user applies or cancels
+    cycle = st.session_state.get("ai_expander_cycle", 0)
+    has_suggestions = bool(st.session_state.get("ai_party_suggestions"))
+    zw_space = "\u200b" * (cycle % 10)
+    expander_label = f"✨ AI Party Name Assistant ({unassigned_total:,} Unassigned Transactions){zw_space}"
+
+    with st.expander(expander_label, expanded=has_suggestions):
         st.markdown(
             "**Use Google Gemini AI to analyze bank narrations and suggest vendor / party names with full review and approval control.**"
         )
@@ -357,6 +363,7 @@ def render_ai_party_assistant_section(
                 )
             with save_col2:
                 if st.button("Cancel", use_container_width=True, key="btn_cancel_ai_approved"):
+                    st.session_state["ai_expander_cycle"] = cycle + 1
                     st.session_state["ai_party_suggestions"] = None
                     st.rerun()
 
@@ -390,7 +397,8 @@ def render_ai_party_assistant_section(
                             except Exception:
                                 pass
 
-                # Clear AI suggestions and refresh view
+                # Clear AI suggestions, increment expander cycle to collapse shut, and refresh view
+                st.session_state["ai_expander_cycle"] = cycle + 1
                 st.session_state["ai_party_suggestions"] = None
                 st.session_state["cached_transactions"] = combined_df
                 st.session_state["editor_view_id"] = st.session_state.get("editor_view_id", 0) + 1
